@@ -1,0 +1,80 @@
+;;; org-llm-test.el --- Tests for org-llm -*- lexical-binding: t; -*-
+
+(require 'org-llm)
+(require 'ert)
+
+(ert-deftest org-llm-test-string-to-bool-nil ()
+  "Test that nil value returns nil."
+  (should-not (org-llm--string-to-bool nil))
+  ;; "Test that strings representing false values return nil."
+  (should-not (org-llm--string-to-bool "nil"))
+  (should-not (org-llm--string-to-bool "false"))
+  (should-not (org-llm--string-to-bool "no"))
+  (should-not (org-llm--string-to-bool "0"))
+  ;; "Test that string comparison is case-insensitive."
+  (should-not (org-llm--string-to-bool "NIL"))
+  (should-not (org-llm--string-to-bool "False"))
+  (should-not (org-llm--string-to-bool "NO"))
+  ;; "Test that non-false values return non-nil."
+  (should (org-llm--string-to-bool "yes"))
+  (should (org-llm--string-to-bool "true"))
+  (should (org-llm--string-to-bool "1"))
+  (should (org-llm--string-to-bool "anything else"))
+  (should (org-llm--string-to-bool 42))
+  (should (org-llm--string-to-bool '(1 2 3))))
+
+(ert-deftest org-llm-test-process-header-args-empty ()
+  "Test processing empty parameter list."
+  (let ((result (org-llm--process-header-args '())))
+    (should (equal (plist-get result :llm-flags) '()))
+    (should (equal (plist-get result :org-code-block-header-args) '()))
+    (should (equal (plist-get result :custom-params) '()))))
+
+(ert-deftest org-llm-test-process-header-args-org-code-block-header-args ()
+  "Test that all standard org babel parameters are recognized."
+  (let* ((params '((:results . "output") (:exports . "results") (:cache . "no")
+                   (:noweb . "yes") (:session . "test") (:tangle . "file.txt")
+                   (:hlines . "yes") (:colname-names . "yes") (:rowname-names . "yes")
+                   (:result-type . "value") (:result-params . "replace")))
+         (result (org-llm--process-header-args params)))
+    (should (equal (plist-get result :org-code-block-header-args) (reverse params)))
+    (should (equal (plist-get result :llm-flags) '()))
+    (should (equal (plist-get result :custom-params) '()))))
+
+(ert-deftest org-llm-test-process-header-args-llm-flags ()
+  "Test that non-org parameters become llm flags."
+  (let* ((params '((:model . "gpt-4") (:temperature . "0.7") (:continue . nil)))
+         (result (org-llm--process-header-args params)))
+    (should (equal (plist-get result :llm-flags) (reverse params)))
+    (should (equal (plist-get result :org-code-block-header-args) '()))
+    (should (equal (plist-get result :custom-params) '()))))
+
+(ert-deftest org-llm-test-process-header-args-custom-params ()
+  "Test that custom parameters are categorized correctly."
+  (let* ((params '((:database . "/path/to/db") (:no-conversion)))
+         (result (org-llm--process-header-args params)))
+    (should (equal (plist-get result :custom-params) (reverse params)))
+    (should (equal (plist-get result :llm-flags) '()))
+    (should (equal (plist-get result :org-code-block-header-args) '()))))
+
+(ert-deftest org-llm-test-process-header-args-mixed ()
+  "Test processing mixed parameter types."
+  (let* ((params '((:results . "raw") (:model . "claude") (:database . "/tmp/db") 
+                   (:exports . "both") (:temperature . "0.5") (:no-conversion)))
+         (result (org-llm--process-header-args params))
+         (org-code-block-header-args (plist-get result :org-code-block-header-args))
+         (llm-flags (plist-get result :llm-flags))
+         (custom-params (plist-get result :custom-params)))
+    ;; Check org params
+    (should (member '(:results . "raw") org-code-block-header-args))
+    (should (member '(:exports . "both") org-code-block-header-args))
+    ;; Check llm flags
+    (should (member '(:model . "claude") llm-flags))
+    (should (member '(:temperature . "0.5") llm-flags))
+    ;; Check custom params
+    (should (member '(:database . "/tmp/db") custom-params))
+    (should (member '(:no-conversion) custom-params))))
+
+(provide 'org-llm-test)
+
+;;; org-llm-test.el ends here

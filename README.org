@@ -1,0 +1,131 @@
+* org-llm
+
+Do you like Simon Willison's command line tool, [[https://github.com/simonw/llm][~llm~]]? And do you also like Emacs, and wish you could simply use that ~llm~ tool from inside Org-mode buffers, pass flags to ~llm~ via Org-mode babel code block header arguments, press ~C-c C-c~ to "execute" your prompt inside the code block, get the response streamed back in real time, and then have the result auto-converted into Org-mode (or into a JSON code block if it's a schema) right there inside your Org-mode buffer? If you said yes to all of these things, then org-llm might be good for you.
+
+If you want to interface with LLMs from Emacs, but you have no affinity for ~llm~ and you're happy to start a new configuration journey that lives completely inside Emacs, there are other excellent options waiting for you: [[https://github.com/karthink/gptel][gptel]], [[https://github.com/rksm/org-ai][org-ai]], [[https://github.com/xenodium/chatgpt-shell][chatgpt-shell]], just to name a few. And of course there's [[https://github.com/MatthewZMD/aidermacs][aidermacs]] (which wraps [[https://github.com/Aider-AI/aider][aider]]), but I like to use that in addition to a "stand alone" (viz. non-code-repo-specific) LLM interface.
+
+* Setup
+
+** llm and Org-mode
+
+First, to be very clear, this package does not interface directly with LLMs. It interfaces with LLMs by proxy through ~llm~, a specific command line tool created by Simon Willison (observe: https://github.com/simonw/llm). You can think of this org-llm package as being a wrapper. If you already know how to configure and use ~llm~, and you already know how to use Org-mode and babel code blocks, then you already know how to use org-llm: just put your prompt as the ~<body>~ of a code block with a "language" of llm, and pass flags to `llm` via header arguments. If you're not familiar with ~llm~, however, then please read through its documentation to familiarize yourself with it.
+
+This package makes the assumption that you already have ~llm~ installed and configured, and that it is available from inside your Emacs. Anyway, to set up ~llm~, just set it up and configure it ([[https://llm.datasette.io/en/stable/setup.html][docs]]) like you would even if org-llm didn't exist. There is a helper function, ~org-llm-change-default-model~ (use a prefix argument to see what's currently the default), but otherwise, set up API keys and configure model settings, etc., the regular way, using ~llm~ directly from the command line. See if you're ready to go by trying M-x ~(shell-command "llm 'hello'")~ and then looking at your ~*Messages*~ buffer.
+
+-----
+
+Using ~llm~ from the command line:
+
+#+begin_src sh
+llm -m 4o "Explain 'a person needs an LLM like a pelican needs a bicycle'"
+#+end_src
+
+Using ~org-llm~ from inside an Org-mode buffer:
+
+#+begin_example
+#+begin_src llm :m 4o
+Explain 'a person needs an LLM like a pelican needs a bicycle'
+#+end_src
+#+end_example
+
+But instead of hitting enter, you call ~org-ctrl-c-ctrl-c~, usually with the binding ~C-c C-c~. The whole point of org-llm is to use ~llm~ inside of Org-mode, so you're presumably already somewhat comfortable with [[https://www.gnu.org/software/emacs/][GNU Emacs]], [[https://orgmode.org/][Org-mode]], and [[https://orgmode.org/worg/org-contrib/babel/intro.html][Babel code blocks]].
+
+** org-llm
+
+This repo isn't on MELPA or NonGNU-devel ELPA yet, so you can install it manually by cloning/downloading, and eval'ing the ~org-llm.el~ file.
+
+* Features
+
+This org-llm package is just a wrapper on the ~llm~ command line tool. Thus, the feature set is predominantly ~llm~'s feature set.
+
+Features provided by ~llm~ (found [[https://github.com/simonw/llm][here]]):
+- model selection (including local) and configuration
+- local sqlite storage, easily navigable by [[https://github.com/simonw/datasette][datasette]], [[https://github.com/saulpw/visidata][visidata]], etc.
+  - use arbitrary databases (ex. different DB per work project), or "no-log"
+  - search history, continue any conversation
+- streaming, system prompts, fragments, attachments, multi-modal
+- plugins, schemas, templates
+
+Features facilitated by ~org-llm~:
+- interface with ~llm~ from Org-mode buffers
+  - async, streaming, multiple buffers simultaneously
+- after responses are finished streaming in, they're [optionally] converted into Org-mode
+- pass any arbitrary Babel code block header arguments to ~llm~ as flags
+
+* Overview
+
+Integrates the ~llm~ command-line tool with Org mode, enabling LLM queries to be executed within Org babel blocks with streaming output. Each LLM process gets its own dedicated output buffer, allowing multiple queries to run concurrently without output interference.
+
+* Architecture
+
+The codebase is modularized into several functional components:
+
+** Core Execution
+
+~org-babel-execute:llm~ orchestrates the execution process by:
+
+1. Preparing commands with ~org-llm--prepare-command~
+2. Creating output buffers with ~org-llm--create-output-buffer~
+3. Starting processes with ~org-llm--start-process~
+4. Setting up UI indicators with ~org-llm--setup-mode-line~
+5. Preparing result placeholders with ~org-llm--prepare-org-result-placeholder~
+6. Post-processing & final insertion with ~org-llm--finalize-result~
+
+** Process Management
+
+- ~org-llm--create-process-filter~ manages streaming output to both the dedicated buffer and Org source buffer
+- ~org-llm--create-process-sentinel~ handles process completion and delegates result finalization to ~org-llm--finalize-result~
+- ~org-llm--stream-output~ directs output to multiple destinations concurrently
+- Each LLM process has its own unique output buffer to prevent cross-contamination during concurrent executions
+
+** Model Management
+
+- Model selection via ~org-llm-yank-a-model-name~ and ~org-llm-copy-a-model-name~
+- Default model changing with ~org-llm-change-default-model~
+- Model list refreshing with ~org-llm-refresh-models~
+
+** Conversation History
+
+- Browse past conversations with ~org-llm-browse-conversations~
+- Search logs with ~org-llm-query-logs~
+
+** Parameter Handling
+
+- ~org-llm--process-header-args~ categorizes parameters into three groups:
+
+1. Org babel parameters (not passed to LLM command): ~:results~, ~:exports~, ~:cache~, ~:noweb~, ~:session~, ~:tangle~, ~:hlines~, etc.
+  - ~:results silent~ will emit to the output buffer, but the results will not be streamed or copied in to the org buffer (or post-processed)
+
+2. Custom parameters for special handling: ~:database~ (for user path)
+  - note: this might be fixed in `llm` now, and not need special handling. TODO verify
+
+3. LLM command flags: All other parameters passed directly to the ~llm~ command
+  - ~org-llm-filter-params~ converts relevant code block header arguments to `llm` command-line flags
+
+* Usage
+
+1. Enable with ~(org-llm-mode 1)~
+2. Create an Org source block: ~#+begin_src llm :model "4o"~
+3. Execute with ~C-c C-c~
+
+** Supported Header Arguments
+
+- Standard Org babel arguments (e.g., ~:results silent~, ~:exports code~)
+  - These are handled by Org Babel and not passed to the LLM command
+  - ~:results silent~ controls whether a final result block is created, but streaming still works
+- LLM command flags (e.g., ~:model "4o"~, ~:temperature 0.7~)
+  - Automatically converted to command-line flags (e.g., ~--model "4o"~)
+- Special parameters:
+  - ~:database~ path for LLM user path override (sets ~LLM_USER_PATH~)
+  - ~:preserve-stream~ controls whether streamed content remains after completion with ~:results silent~ (defaults to ~nil~, accepts ~t~, ~nil~, ~"true"~, ~"false"~)
+
+** Process Management
+
+- ~org-llm-list-active-processes~ - Display information about running LLM processes
+- ~org-llm-kill-process~ - Kill the most recent LLM process
+- ~org-llm-kill-all-processes~ - Kill all running LLM processes
+
+** Customization
+
+- ~org-llm-output-buffer~ - Buffer name for displaying streaming output
+- ~org-llm-mode-line-indicator~ - Text to display in mode line during active processes

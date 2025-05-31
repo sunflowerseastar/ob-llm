@@ -179,20 +179,43 @@ For example: '(\"--lua-filter=/path/to/filter.lua\")"
             text)))
     text))
 
+(defun org-llm--pretty-print-json (final-output)
+  "Pretty-print FINAL-OUTPUT using jq if available."
+  (if (executable-find "jq")
+      (with-temp-buffer
+        (insert final-output)
+        (if (zerop (call-process-region (point-min) (point-max)
+                                        "jq" t t nil "."))
+            (string-trim (buffer-string))
+          final-output))
+    final-output))
+
 (defun org-llm--postprocess-result (final-output params)
   "Apply all requested post-processing steps to FINAL-OUTPUT according to PARAMS."
-  (let* ((custom-params (plist-get (org-llm--process-header-args params) :custom-params))
+  (let* ((processed-params (org-llm--process-header-args params))
+         (custom-params (plist-get processed-params :custom-params))
+         (llm-flags (plist-get processed-params :llm-flags))
          (no-conversion-p (assq :no-conversion custom-params))
-         ;; don't convert if :no-conversion is present (regardless of its value)...
-         (apply-post-processing-p (if no-conversion-p nil
-                                    ;; ...otherwise, convert according to `org-llm-post-process-auto-convert-p'
-                                    org-llm-post-process-auto-convert-p)))
+         (schema-p (or (assq :schema llm-flags)
+                       (assq :schema-multi llm-flags))))
+
     ;; (message ":: custom-params %s" custom-params)
     ;; (message ":: no-conversion-p %s" no-conversion-p)
     ;; (message ":: apply-post-processing-p %s" apply-post-processing-p)
-    (if apply-post-processing-p
-        (org-llm--markdown->org final-output)
-      final-output)))
+
+    (cond
+     ;; if user is passing :no-conversion, or if
+     ;; `org-llm-post-process-auto-convert-p' is set to not convert by default,
+     ;; don't perform a post-process conversion
+     ((or no-conversion-p (not org-llm-post-process-auto-convert-p)) final-output)
+
+     ;; if it's a schema, then convert to a pretty-printed JSON source block
+     (schema-p
+      (let ((final-output-after-pp-json (org-llm--pretty-print-json final-output)))
+        (format "#+begin_src json\n%s\n#+end_src" final-output-after-pp-json)))
+
+     ;; otherwise, convert the final outputted markdown to org mode
+     (t (org-llm--markdown->org final-output)))))
 
 (defun org-llm--finalize-result (final-output all-params p-src-buffer p-src-position silent-p)
   "Post-process FINAL-OUTPUT and insert it unless SILENT-P.  Return the processed text."

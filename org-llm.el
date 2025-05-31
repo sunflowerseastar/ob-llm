@@ -102,16 +102,19 @@ Returns a plist with keys:
     (dolist (param params)
       (let ((key (car param)))
         (cond
-         ;; org babel code block header arguments - don't pass to `llm'
+         ;; org babel code block header arguments - don't include these as flags
+         ;; when constructing the `llm' command to shell out; instead, these
+         ;; should handle code block execution as usual...
          ((memq key '(:results :exports :cache :noweb :session :tangle
                       :hlines :colname-names :rowname-names :result-type :result-params :wrap))
           (push param org-code-block-header-args))
 
-         ;; special header arguments used as "params" for org-llm application logic
-         ((memq key '(:database :preserve-stream :convert-markdown))
+         ;; ...special header arguments used as "params" for org-llm application logic...
+         ((memq key '(:database :preserve-stream :no-conversion))
           (push param custom-params))
 
-         ;; all other header arguments are passed to the `llm' command as flags
+         ;; ...and then all other header arguments are going to be passed to the
+         ;; `llm' command as flags.
          (t (push param llm-flags)))))
 
     ;; Return categorized parameters
@@ -179,9 +182,13 @@ For example: '(\"--lua-filter=/path/to/filter.lua\")"
 (defun org-llm--postprocess-result (final-output params)
   "Apply all requested post-processing steps to FINAL-OUTPUT according to PARAMS."
   (let* ((custom-params (plist-get (org-llm--process-header-args params) :custom-params))
-         (convert-markdown-p (cdr (assq :convert-markdown custom-params)))
-         (apply-post-processing-p (org-llm--string-to-bool
-                                   (if convert-markdown-p convert-markdown-p org-llm-post-process-auto-convert-p))))
+         (no-conversion-p (assq :no-conversion custom-params))
+         ;; don't convert if :no-conversion is present (regardless of its value)...
+         (apply-post-processing-p (if no-conversion-p nil
+                                    ;; ...otherwise, convert according to `org-llm-post-process-auto-convert-p'
+                                    org-llm-post-process-auto-convert-p)))
+    ;; (message ":: custom-params %s" custom-params)
+    ;; (message ":: no-conversion-p %s" no-conversion-p)
     ;; (message ":: apply-post-processing-p %s" apply-post-processing-p)
     (if apply-post-processing-p
         (org-llm--markdown->org final-output)

@@ -79,8 +79,8 @@
 (defvar org-babel-load-languages)
 
 (defgroup org-llm nil
-  "Options for Org-mode's LLM (Large Language Model) integration."
-  :tag "Org LLM"
+  "Options for org-llm, a wrapper of the `llm' command line tool."
+  :tag "org-llm"
   :group 'org-babel)
 
 (defun org-llm--string-to-bool (value)
@@ -525,7 +525,7 @@ With prefix argument, display the output buffer in a split window."
     nil))
 
 ;;;###autoload
-(define-minor-mode org-llm
+(define-minor-mode org-llm-mode
   "Minor mode to handle `llm` blocks in Org-mode. This mode
  enables execution of LLM (Large Language Model) code blocks in
  Org-mode documents. When enabled, you can create source blocks

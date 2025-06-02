@@ -637,6 +637,11 @@ If `org-llm-models' is empty, refresh the models."
     (kill-new selection)  ; Copy the selected item to the clipboard
     (message "Copied: %s" selection)))
 
+(defun org-llm-echo-default-model ()
+  "Echo out the default model so you can see what's set."
+  (interactive)
+  (shell-command "llm models default"))
+
 (defun org-llm-change-default-model ()
   "Set a new default model. With a prefix argument, see the
  current default model."

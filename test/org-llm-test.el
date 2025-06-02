@@ -3,26 +3,6 @@
 (require 'org-llm)
 (require 'ert)
 
-(ert-deftest org-llm-test-string-to-bool-nil ()
-  "Test that nil value returns nil."
-  (should-not (org-llm--string-to-bool nil))
-  ;; "Test that strings representing false values return nil."
-  (should-not (org-llm--string-to-bool "nil"))
-  (should-not (org-llm--string-to-bool "false"))
-  (should-not (org-llm--string-to-bool "no"))
-  (should-not (org-llm--string-to-bool "0"))
-  ;; "Test that string comparison is case-insensitive."
-  (should-not (org-llm--string-to-bool "NIL"))
-  (should-not (org-llm--string-to-bool "False"))
-  (should-not (org-llm--string-to-bool "NO"))
-  ;; "Test that non-false values return non-nil."
-  (should (org-llm--string-to-bool "yes"))
-  (should (org-llm--string-to-bool "true"))
-  (should (org-llm--string-to-bool "1"))
-  (should (org-llm--string-to-bool "anything else"))
-  (should (org-llm--string-to-bool 42))
-  (should (org-llm--string-to-bool '(1 2 3))))
-
 (ert-deftest org-llm-test-process-header-args-empty ()
   "Test processing empty parameter list."
   (let ((result (org-llm--process-header-args '())))

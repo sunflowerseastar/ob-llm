@@ -148,7 +148,7 @@ Returns a plist with keys:
           (push param org-code-block-header-args))
 
          ;; ...special header arguments used as "params" for org-llm application logic...
-         ((memq key '(:database :preserve-stream :no-conversion))
+         ((memq key '(:database :no-conversion))
           (push param custom-params))
 
          ;; ...and then all other header arguments are going to be passed to the
@@ -217,14 +217,6 @@ Converts Org Babel header arguments to command line flags for `llm'."
             (append global-mode-string
                     (list '(:eval (when org-llm-active-processes org-llm-line-indicator)))))))
   (force-mode-line-update t))
-
-(defun org-llm--string-to-bool (value)
-  "Convert VALUE to a boolean.
-If VALUE is nil, \"nil\", \"false\", or \"no\", return nil.
-Otherwise, return non-nil."
-  (not (or (null value)
-           (and (stringp value)
-                (member (downcase value) '("nil" "false" "no" "0"))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Post-processing helpers (markdown → Org, insertion, etc.)
@@ -425,21 +417,13 @@ define where to stream in org buffer."
                               (string-match "silent" result-params))))
 
           ;; 1 - remove streamed output from org buffer (before finalizing result)
-          (let* ((custom-params (plist-get (org-llm--process-header-args all-params) :custom-params))
-                 (preserve-stream-param (assq :preserve-stream custom-params))
-                 (default-preserve-stream-p silent-p)
-                 (preserve-stream-p (org-llm--string-to-bool (if preserve-stream-param
-                                                                 (cdr preserve-stream-param)
-                                                               default-preserve-stream-p)))
-                 (result-marker (process-get process 'result-marker))
-                 (stream-start (process-get process 'stream-start-marker)))
-
-            ;; Clean up streamed content unless preserved
-            (when (and (not preserve-stream-p)
-                       result-marker (marker-buffer result-marker)
-                       stream-start (marker-buffer stream-start))
-              (with-current-buffer (marker-buffer result-marker)
-                (delete-region stream-start result-marker))))
+          (if (not silent-p)
+              (let* ((stream-start (process-get process 'stream-start-marker))
+                     (result-marker (process-get process 'result-marker)))
+                (when (and result-marker (marker-buffer result-marker)
+                           stream-start (marker-buffer stream-start))
+                  (with-current-buffer (marker-buffer result-marker)
+                    (delete-region stream-start result-marker)))))
 
           ;; 2 - insert output into org-buffer (if not silent)
           (when (and (buffer-live-p src-buffer) (not silent-p))

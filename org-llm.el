@@ -83,6 +83,49 @@
   :tag "org-llm"
   :group 'org-babel)
 
+(defcustom org-llm-output-buffer "*org-babel-llm-output*"
+  "Buffer name prefix for displaying LLM streaming output.
+Each LLM process gets its own uniquely named buffer based on this prefix."
+  :type 'string
+  :group 'org-llm)
+
+(defcustom org-llm-line-indicator "🦆"
+  "Text to display in the mode line when an LLM process is running.
+Set to nil to disable the indicator."
+  :type '(choice (string :tag "Indicator text")
+          (const :tag "No indicator" nil))
+  :group 'org-llm)
+
+(defcustom org-llm-post-process-auto-convert-p t
+  "Generally speaking, the text result from `llm` is going to be
+either json (if it's a schema prompt) or markdown. If it's json,
+then we probably want to post-process that json to make it look
+nice. If it's markdown, then we probably want to post-process
+that to convert it to org syntax. This setting, `t' by default,
+will automatically attempt to make those conversions when the
+response is finished coming back."
+  :type 'boolean
+  :group 'org-llm)
+
+(defcustom org-llm-pandoc-additional-org-mode-conversion-flags nil
+  "Additional flags to pass to pandoc when converting markdown to
+org format. This should be a list of strings, each string being a
+single flag or flag with value. For example:
+'(\"--lua-filter=/path/to/filter.lua\")"
+  :type '(repeat string)
+  :group 'org-llm)
+
+(defvar org-babel-default-header-args:llm '((:results . "raw")))
+
+(defvar org-llm-active-processes nil
+  "List of currently running LLM processes.")
+
+(defcustom org-llm-models nil
+  "List of available LLM models. This list is populated by
+`org-llm-refresh-models` from the output of `llm models`."
+  :type '(repeat string)
+  :group 'org-llm)
+
 (defun org-llm--string-to-bool (value)
   "Convert VALUE to a boolean.
 If VALUE is nil, \"nil\", \"false\", or \"no\", return nil.
@@ -121,37 +164,6 @@ Returns a plist with keys:
     (list :org-code-block-header-args org-code-block-header-args
           :custom-params custom-params
           :llm-flags llm-flags)))
-
-(defcustom org-llm-output-buffer "*org-babel-llm-output*"
-  "Buffer name prefix for displaying LLM streaming output.
-Each LLM process gets its own uniquely named buffer based on this prefix."
-  :type 'string
-  :group 'org-llm)
-
-(defcustom org-llm-line-indicator "🦆"
-  "Text to display in the mode line when an LLM process is running.
-Set to nil to disable the indicator."
-  :type '(choice (string :tag "Indicator text")
-          (const :tag "No indicator" nil))
-  :group 'org-llm)
-
-(defcustom org-llm-post-process-auto-convert-p t
-  "Generally speaking, the text result from `llm` is going to be
-either json (if it's a schema prompt) or markdown. If it's json,
-then we probably want to post-process that json to make it look
-nice. If it's markdown, then we probably want to post-process
-that to convert it to org syntax. This setting, `t' by default,
-will automatically attempt to make those conversions when the
-response is finished coming back."
-  :type 'boolean
-  :group 'org-llm)
-
-(defcustom org-llm-pandoc-additional-org-mode-conversion-flags nil
-  "Additional flags to pass to pandoc when converting markdown to org format.
-This should be a list of strings, each string being a single flag or flag with value.
-For example: '(\"--lua-filter=/path/to/filter.lua\")"
-  :type '(repeat string)
-  :group 'org-llm)
 
 ;; ---------------------------------------------------------------------------
 ;; Post-processing helpers (markdown → Org, insertion, etc.)
@@ -232,11 +244,6 @@ Argument ALL-PARAMS all Babel code block header arguments."
                   (org-babel-insert-result processed '("raw"))))
               processed))))
     (error (message "Error in LLM process sentinel: %S" err))))
-
-(defvar org-babel-default-header-args:llm '((:results . "raw")))
-
-(defvar org-llm-active-processes nil
-  "List of currently running LLM processes.")
 
 (defun org-llm-extract-database-param (plist)
   "Extract the value associated with :db from the property list PLIST."
@@ -512,23 +519,6 @@ be passed to the `llm' shell command as flags."
     ;; Return a placeholder - the real result will be inserted by the sentinel
     nil))
 
-;;;###autoload
-(define-minor-mode org-llm-mode
-  "Minor mode to handle llm Babel code blocks in Org-mode.
-Execution will send the code block content to Simon Willison's
-`llm` command line tool along with relevant header arguments as
-flags."
-  :lighter " LLM"
-  :keymap (let ((map (make-sparse-keymap))) map)
-  :group 'org-llm
-  (if org-llm
-      (progn
-        (add-to-list 'org-src-lang-modes '("llm" . fundamental))
-        (add-to-list 'org-babel-load-languages '(llm . t))
-        (org-babel-do-load-languages 'org-babel-load-languages org-babel-load-languages)
-        (message "Org LLM mode enabled"))
-    (message "Org LLM mode disabled")))
-
 (defun org-llm-list-active-processes ()
   "Display information about currently running LLM processes."
   (interactive)
@@ -568,12 +558,6 @@ flags."
     (setq org-llm-active-processes nil)
     (message "All LLM processes killed")
     (message "No active LLM processes to kill")))
-
-(defcustom org-llm-models nil
-  "List of available LLM models. This list is populated by
-`org-llm-refresh-models` from the output of `llm models`."
-  :type '(repeat string)
-  :group 'org-llm)
 
 (defun org-llm--output-to-model-identifier (line)
   "Return the model identifier found in LINE produced by 'llm models'.
@@ -698,6 +682,23 @@ chosen one."
           (let ((conversation-id (cdr (assoc choice candidates))))
             (kill-new conversation-id)
             (message "Copied (killed) conversation ID: %s" conversation-id)))))))
+
+;;;###autoload
+(define-minor-mode org-llm-mode
+  "Minor mode to handle llm Babel code blocks in Org-mode.
+Execution will send the code block content to Simon Willison's
+`llm` command line tool along with relevant header arguments as
+flags."
+  :lighter " LLM"
+  :keymap (let ((map (make-sparse-keymap))) map)
+  :group 'org-llm
+  (if org-llm-mode
+      (progn
+        (add-to-list 'org-src-lang-modes '("llm" . fundamental))
+        (add-to-list 'org-babel-load-languages '(llm . t))
+        (org-babel-do-load-languages 'org-babel-load-languages org-babel-load-languages)
+        (message "Org LLM mode enabled"))
+    (message "Org LLM mode disabled")))
 
 (provide 'org-llm)
 

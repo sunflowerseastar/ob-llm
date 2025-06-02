@@ -1,4 +1,4 @@
-;;; org-llm.el --- Use `llm` in org mode -*- lexical-binding: t -*-
+;;; org-llm.el --- Use `llm' as an Org Babel language -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 Grant Surlyn
 
@@ -35,7 +35,8 @@
 ;; `llm' installed or configured, please see https://llm.datasette.io to follow
 ;; setup instructions and orient yourself first.
 ;;
-;; The idea:
+;; The main idea:
+;;
 ;; - interface with Simon Willison's `llm' tool via Emacs through Org mode
 ;;   - code block header arguments pass through to `llm' as flags, so you can
 ;;     specify model, file, website, "continue", conversation id, database, etc.
@@ -44,8 +45,6 @@
 ;;   - completed response is converted to Org mode syntax or prettified JSON
 ;;
 ;; Usage:
-;; (require 'org-llm)
-;; (org-llm-mode 1)
 ;;
 ;; Org Babel code blocks with a "language" of llm shell out to `llm', with the
 ;; code block's <body> serving as the prompt:
@@ -79,19 +78,15 @@
 (require 'cl-lib)
 (require 'json)
 
-(defvar org-src-lang-modes)
-(defvar org-babel-load-languages)
-
 (defgroup org-llm nil
   "Options for org-llm, a wrapper of the `llm' command line tool."
   :tag "org-llm"
   :group 'org-babel)
 
-(defcustom org-llm-output-buffer "*org-babel-llm-output*"
-  "Buffer name prefix for displaying LLM streaming output.
-Each LLM process gets its own uniquely named buffer based on this prefix."
-  :type 'string
-  :group 'org-llm)
+(defvar org-src-lang-modes)
+(defvar org-babel-load-languages)
+(defvar org-llm-active-processes nil
+  "List of currently running LLM processes.")
 
 (defcustom org-llm-line-indicator "🦆"
   "Text to display in the mode line when an LLM process is running.
@@ -119,11 +114,6 @@ single flag or flag with value. For example:
   :type '(repeat string)
   :group 'org-llm)
 
-(defvar org-babel-default-header-args:llm '((:results . "raw")))
-
-(defvar org-llm-active-processes nil
-  "List of currently running LLM processes.")
-
 (defcustom org-llm-models nil
   "List of available LLM models. This list is populated with
 `org-llm-refresh-models' by converting and inserting the output
@@ -135,13 +125,9 @@ to `llm'."
   :type '(repeat string)
   :group 'org-llm)
 
-(defun org-llm--string-to-bool (value)
-  "Convert VALUE to a boolean.
-If VALUE is nil, \"nil\", \"false\", or \"no\", return nil.
-Otherwise, return non-nil."
-  (not (or (null value)
-           (and (stringp value)
-                (member (downcase value) '("nil" "false" "no" "0"))))))
+;;  ---------------------------------------------------------------------------
+;;; General helpers
+;;  ---------------------------------------------------------------------------
 
 (defun org-llm--process-header-args (params)
   "Process header arguments in PARAMS and return categorized results.
@@ -154,7 +140,7 @@ Returns a plist with keys:
     (dolist (param params)
       (let ((key (car param)))
         (cond
-         ;; org babel code block header arguments - don't include these as flags
+         ;; Org Babel code block header arguments - don't include these as flags
          ;; when constructing the `llm' command to shell out; instead, these
          ;; should handle code block execution as usual...
          ((memq key '(:results :exports :cache :noweb :session :tangle
@@ -174,93 +160,7 @@ Returns a plist with keys:
           :custom-params custom-params
           :llm-flags llm-flags)))
 
-;; ---------------------------------------------------------------------------
-;; Post-processing helpers (markdown → Org, insertion, etc.)
-;; ---------------------------------------------------------------------------
-
-(defun org-llm--remove-trailing-backslashes (text)
-  "Remove trailing double backslashes from TEXT that appear after pandoc conversion."
-  (replace-regexp-in-string "\\\\\\\\$" "" text))
-
-(defun org-llm--markdown->org (text)
-  "Convert markdown TEXT to Org with Pandoc, or return TEXT if conversion fails."
-  (if (executable-find "pandoc")
-      (with-temp-buffer
-        (insert text)
-        (let ((args (append '("--from" "markdown+hard_line_breaks"
-                              "--to" "org"
-                              "--sandbox=true"
-                              "--wrap=none")
-                            org-llm-pandoc-additional-org-mode-conversion-flags)))
-          (if (zerop (apply #'call-process-region
-                            (point-min) (point-max)
-                            "pandoc" t t nil
-                            args))
-              (org-llm--remove-trailing-backslashes (buffer-string))
-            text)))
-    text))
-
-(defun org-llm--pretty-print-json (final-output)
-  "Pretty-print FINAL-OUTPUT using jq if available."
-  (if (executable-find "jq")
-      (with-temp-buffer
-        (insert final-output)
-        (if (zerop (call-process-region (point-min) (point-max)
-                                        "jq" t t nil "."))
-            (string-trim (buffer-string))
-          final-output))
-    final-output))
-
-(defun org-llm--postprocess-result (final-output params)
-  "Apply all requested post-processing steps to FINAL-OUTPUT according to PARAMS."
-  (let* ((processed-params (org-llm--process-header-args params))
-         (custom-params (plist-get processed-params :custom-params))
-         (llm-flags (plist-get processed-params :llm-flags))
-         (no-conversion-p (assq :no-conversion custom-params))
-         (schema-p (or (assq :schema llm-flags)
-                       (assq :schema-multi llm-flags))))
-
-    (cond
-     ;; if user is passing :no-conversion, or if
-     ;; `org-llm-post-process-auto-convert-p' is set to not convert by default,
-     ;; don't perform a post-process conversion
-     ((or no-conversion-p (not org-llm-post-process-auto-convert-p)) final-output)
-
-     ;; if it's a schema, then convert to a pretty-printed JSON source block
-     (schema-p
-      (let ((final-output-after-pp-json (org-llm--pretty-print-json final-output)))
-        (format "#+begin_src json\n%s\n#+end_src" final-output-after-pp-json)))
-
-     ;; otherwise, convert the final outputted markdown to org mode
-     (t (org-llm--markdown->org final-output)))))
-
-(defun org-llm--finalize-result (final-output all-params p-src-buffer p-src-position silent-p)
-  "Post-process FINAL-OUTPUT and insert it into P-SRC-BUFFER at
-P-SRC-POSITION unless SILENT-P. Return the processed text.
-Argument ALL-PARAMS all Babel code block header arguments."
-  (condition-case err
-      (with-current-buffer p-src-buffer
-        (save-excursion
-          (goto-char p-src-position)
-          (let ((processed (org-llm--postprocess-result final-output all-params)))
-            ;; (message ":: processed %S ::" processed)
-            ;; (message "::: all-params %s" all-params)
-            (unless silent-p
-              (with-current-buffer p-src-buffer
-                (save-excursion
-                  (goto-char p-src-position)
-                  (org-babel-remove-result all-params)
-                  (org-babel-insert-result processed '("raw"))))
-              processed))))
-    (error (message "Error in LLM process sentinel: %S" err))))
-
-(defun org-llm-extract-database-param (plist)
-  "Extract the value associated with :db from the property list PLIST."
-  (let ((db-pair (assoc :database plist)))
-    (when db-pair
-      (cdr db-pair))))
-
-(defun org-llm-filter-params (params)
+(defun org-llm--filter-params (params)
   "Filter PARAMS to include relevant ones for `llm' command line.
 Converts Org Babel header arguments to command line flags for `llm'."
   (let ((processed-params (org-llm--process-header-args params)))
@@ -289,8 +189,8 @@ Converts Org Babel header arguments to command line flags for `llm'."
 
 (defun org-llm--prepare-command (body params)
   "Build command string for `llm' execution based on BODY and PARAMS."
-  (let* ((flags (org-llm-filter-params params))
-         (logs-database-path (org-llm-extract-database-param params)))
+  (let* ((flags (org-llm--filter-params params))
+         (logs-database-path (alist-get :database params)))
     (format (concat (when logs-database-path
                       (format "LLM_USER_PATH=%s " logs-database-path))
                     "llm %s %s")
@@ -308,13 +208,6 @@ Converts Org Babel header arguments to command line flags for `llm'."
       (insert "Output:\n\n"))
     buffer))
 
-(defun org-llm--start-process (llm-shell-command output-buffer)
-  "Start LLM process running LLM-SHELL-COMMAND with output to OUTPUT-BUFFER."
-  (let ((proc (start-process-shell-command "org-babel-llm" output-buffer llm-shell-command)))
-    ;; Add to active processes list
-    (push proc org-llm-active-processes)
-    proc))
-
 (defun org-llm--setup-mode-line ()
   "Setup the mode line indicator for active LLM processes."
   (when org-llm-line-indicator
@@ -324,6 +217,103 @@ Converts Org Babel header arguments to command line flags for `llm'."
             (append global-mode-string
                     (list '(:eval (when org-llm-active-processes org-llm-line-indicator)))))))
   (force-mode-line-update t))
+
+(defun org-llm--string-to-bool (value)
+  "Convert VALUE to a boolean.
+If VALUE is nil, \"nil\", \"false\", or \"no\", return nil.
+Otherwise, return non-nil."
+  (not (or (null value)
+           (and (stringp value)
+                (member (downcase value) '("nil" "false" "no" "0"))))))
+
+;; ---------------------------------------------------------------------------
+;; Post-processing helpers (markdown → Org, insertion, etc.)
+;; ---------------------------------------------------------------------------
+
+(defun org-llm--remove-trailing-backslashes (text)
+  "Remove trailing double backslashes from TEXT that appear after pandoc conversion."
+  (replace-regexp-in-string "\\\\\\\\$" "" text))
+
+(defun org-llm--prettify-json-response (final-output)
+  "Pretty-print FINAL-OUTPUT using jq if available."
+  (if (executable-find "jq")
+      (with-temp-buffer
+        (insert final-output)
+        (if (zerop (call-process-region (point-min) (point-max)
+                                        "jq" t t nil "."))
+            (string-trim (buffer-string))
+          final-output))
+    final-output))
+
+(defun org-llm--convert-markdown-response-to-org-mode (text)
+  "Convert markdown TEXT to Org with Pandoc, or return TEXT if conversion fails."
+  (if (executable-find "pandoc")
+      (with-temp-buffer
+        (insert text)
+        (let ((pandoc-args (append '("--from" "markdown+hard_line_breaks"
+                                     "--to" "org"
+                                     "--sandbox=true"
+                                     "--wrap=none")
+                                   org-llm-pandoc-additional-org-mode-conversion-flags)))
+          (if (zerop (apply #'call-process-region
+                            (point-min) (point-max)
+                            "pandoc" t t nil
+                            pandoc-args))
+              (org-llm--remove-trailing-backslashes (buffer-string))
+            text)))
+    text))
+
+(defun org-llm--postprocess-result (final-output params)
+  "Apply all requested post-processing steps to FINAL-OUTPUT according to PARAMS."
+  (let* ((processed-params (org-llm--process-header-args params))
+         (custom-params (plist-get processed-params :custom-params))
+         (llm-flags (plist-get processed-params :llm-flags))
+         (no-conversion-p (assq :no-conversion custom-params))
+         (schema-p (or (assq :schema llm-flags)
+                       (assq :schema-multi llm-flags))))
+
+    (cond
+     ;; 1 - do not perform any post-process conversion
+     ((or no-conversion-p (not org-llm-post-process-auto-convert-p)) final-output)
+
+     ;; 2 - it's a schema, so prettify the JSON response
+     (schema-p
+      (let ((final-output-after-pp-json (org-llm--prettify-json-response final-output)))
+        (format "#+begin_src json\n%s\n#+end_src" final-output-after-pp-json)))
+
+     ;; 3 - otherwise, convert the markdown response to Org mode syntax
+     (t (org-llm--convert-markdown-response-to-org-mode final-output)))))
+
+(defun org-llm--finalize-result (final-output all-params src-buffer src-position silent-p)
+  "Post-process FINAL-OUTPUT and insert it into SRC-BUFFER at
+SRC-POSITION unless SILENT-P. Return the processed text.
+Argument ALL-PARAMS all Babel code block header arguments."
+  (condition-case err
+      (with-current-buffer src-buffer
+        (save-excursion
+          (goto-char src-position)
+          (let ((processed (org-llm--postprocess-result final-output all-params)))
+            ;; (message ":: processed %S ::" processed)
+            ;; (message "::: all-params %s" all-params)
+            (unless silent-p
+              (with-current-buffer src-buffer
+                (save-excursion
+                  (goto-char src-position)
+                  (org-babel-remove-result all-params)
+                  (org-babel-insert-result processed '("raw"))))
+              processed))))
+    (error (message "Error in LLM process sentinel: %S" err))))
+
+;;  ---------------------------------------------------------------------------
+;;; Streams and processes
+;;  ---------------------------------------------------------------------------
+
+(defun org-llm--start-process (llm-shell-command output-buffer)
+  "Start LLM process running LLM-SHELL-COMMAND with output to OUTPUT-BUFFER."
+  (let ((proc (start-process-shell-command "org-babel-llm" output-buffer llm-shell-command)))
+    ;; Add to active processes list
+    (push proc org-llm-active-processes)
+    proc))
 
 (defun org-llm--prepare-org-result-placeholder (src-buffer src-position params)
   "Create result placeholder in SRC-BUFFER at SRC-POSITION for streaming.
@@ -404,14 +394,14 @@ define where to stream in org buffer."
   "Create process sentinel function for handling completion."
   (lambda (process event)
     (let* ((all-params (process-get process 'all-params))
-           (p-src-buffer (process-get process 'src-buffer))
-           (p-src-position (process-get process 'src-position))
-           (p-start-time (process-get process 'start-time))
-           (status (substring event 0 -1)) ; Remove trailing newline
-           (duration (float-time (time-subtract (current-time) p-start-time)))
+           (src-buffer (process-get process 'src-buffer))
+           (src-position (process-get process 'src-position))
+           (start-time (process-get process 'start-time))
+           (status (substring event 0 -1)) ; remove trailing newline
+           (duration (float-time (time-subtract (current-time) start-time)))
            (final-output ""))
 
-      ;; Update the output buffer with completion status
+      ;; update the output buffer with completion status
       (with-current-buffer (process-buffer process)
         (goto-char (point-max))
         (insert (format "\n\n--- Process %s after %s seconds ---\n"
@@ -452,8 +442,8 @@ define where to stream in org buffer."
                 (delete-region stream-start result-marker))))
 
           ;; 2 - insert output into org-buffer (if not silent)
-          (when (and (buffer-live-p p-src-buffer) (not silent-p))
-            (org-llm--finalize-result final-output all-params p-src-buffer p-src-position silent-p))))
+          (when (and (buffer-live-p src-buffer) (not silent-p))
+            (org-llm--finalize-result final-output all-params src-buffer src-position silent-p))))
 
       ;; Remove from active processes list
       (setq org-llm-active-processes (delq process org-llm-active-processes))
@@ -464,69 +454,6 @@ define where to stream in org buffer."
 
       ;; Notify user
       (message "LLM process %s in %s seconds" status duration))))
-
-(defun org-babel-execute:llm (body params)
-  "Execute an llm Babel code block -- the BODY is the prompt that
-will be passed to `llm' as a shell command. PARAMS, the code
-block header arguments, will be processed, such that Babel can
-handles the ones it expects in its default way, org-llm can pick
-out application logic (ex. `:no-conversion'), and the rest will
-be passed to the `llm' shell command as flags."
-
-  ;; Set up the environment
-  (let* ((llm-shell-command (org-llm--prepare-command body params))
-         (buffer-name (format "%s-%s" org-llm-output-buffer (make-temp-name "")))
-         (buffer (org-llm--create-output-buffer buffer-name llm-shell-command))
-         (src-buffer (current-buffer))
-         (src-position (point))
-         (start-time (current-time))
-         (proc nil)
-         (result-marker nil)
-         (stream-start-marker nil))
-
-    (message "Running LLM command: %s" llm-shell-command)
-
-    ;; Display the buffer in a window only when prefix arg is provided
-    (when current-prefix-arg
-      (unless (get-buffer-window buffer)
-        (let ((new-window (split-window-below)))
-          (set-window-buffer new-window buffer))))
-
-    ;; Prepare a place in the org buffer for streaming results
-    (setq result-marker (org-llm--prepare-org-result-placeholder src-buffer src-position params))
-    ;; Record the immutable start of the streaming region
-    (when result-marker
-      (setq stream-start-marker (copy-marker result-marker nil)))
-
-    ;; Set up and start the process
-    (setq proc (org-llm--start-process llm-shell-command buffer))
-
-    ;; Update the mode line
-    (org-llm--setup-mode-line)
-
-    ;; Store context information as process properties
-    (process-put proc 'all-params params)
-    (process-put proc 'start-time start-time)
-    (process-put proc 'src-buffer src-buffer)
-    (process-put proc 'src-position src-position)
-    (process-put proc 'result-marker result-marker)
-    (process-put proc 'stream-start-marker stream-start-marker)
-
-    ;; Store the original source block location to clean up properly later
-    (process-put proc 'source-block-end
-                 (save-excursion
-                   (goto-char src-position)
-                   (when (re-search-forward "^[ \t]*#\\+END_SRC" nil t)
-                     (progn (forward-line) (line-end-position)))))
-
-    ;; Set up the process filter to handle streaming output
-    (set-process-filter proc (org-llm--create-process-filter))
-
-    ;; Set up the process sentinel to handle completion
-    (set-process-sentinel proc (org-llm--create-process-sentinel))
-
-    ;; Return a placeholder - the real result will be inserted by the sentinel
-    nil))
 
 (defun org-llm-list-active-processes ()
   "Display information about currently running LLM processes."
@@ -567,6 +494,10 @@ be passed to the `llm' shell command as flags."
     (setq org-llm-active-processes nil)
     (message "All LLM processes killed")
     (message "No active LLM processes to kill")))
+
+;; ---------------------------------------------------------------------------
+;; Model handling
+;; ---------------------------------------------------------------------------
 
 (defun org-llm--output-to-model-identifier (line)
   "Return the model identifier found in LINE produced by 'llm models'.
@@ -628,6 +559,10 @@ current default model."
       (let ((command (format "llm models default %s" selection)))
         (shell-command command)
         (message "Executed command: %s" command)))))
+
+;;  ---------------------------------------------------------------------------
+;;; Database, conversation, logs
+;;  ---------------------------------------------------------------------------
 
 (defun org-llm-browse-conversations ()
   "Browse LLM conversations and yank the ID of the selected
@@ -692,6 +627,73 @@ chosen one."
             (kill-new conversation-id)
             (message "Copied (killed) conversation ID: %s" conversation-id)))))))
 
+;;  ---------------------------------------------------------------------------
+;;; Main minor mode setup
+;;  ---------------------------------------------------------------------------
+
+(defun org-babel-execute:llm (body params)
+  "Execute an llm Babel code block -- the BODY is the prompt that
+will be passed to `llm' as a shell command. PARAMS, the code
+block header arguments, will be processed, such that Babel can
+handles the ones it expects in its default way, org-llm can pick
+out application logic (ex. `:no-conversion'), and the rest will
+be passed to the `llm' shell command as flags."
+
+  ;; Set up the environment
+  (let* ((llm-shell-command (org-llm--prepare-command body params))
+         (buffer-name (format "*org-llm-output-%s*" (make-temp-name "")))
+         (buffer (org-llm--create-output-buffer buffer-name llm-shell-command))
+         (src-buffer (current-buffer))
+         (src-position (point))
+         (start-time (current-time))
+         (proc nil)
+         (result-marker nil)
+         (stream-start-marker nil))
+
+    (message "Running LLM command: %s" llm-shell-command)
+
+    ;; Display the buffer in a window only when prefix arg is provided
+    (when current-prefix-arg
+      (unless (get-buffer-window buffer)
+        (let ((new-window (split-window-below)))
+          (set-window-buffer new-window buffer))))
+
+    ;; Prepare a place in the org buffer for streaming results
+    (setq result-marker (org-llm--prepare-org-result-placeholder src-buffer src-position params))
+    ;; Record the immutable start of the streaming region
+    (when result-marker
+      (setq stream-start-marker (copy-marker result-marker nil)))
+
+    ;; Set up and start the process
+    (setq proc (org-llm--start-process llm-shell-command buffer))
+
+    ;; Update the mode line
+    (org-llm--setup-mode-line)
+
+    ;; Store context information as process properties
+    (process-put proc 'all-params params)
+    (process-put proc 'start-time start-time)
+    (process-put proc 'src-buffer src-buffer)
+    (process-put proc 'src-position src-position)
+    (process-put proc 'result-marker result-marker)
+    (process-put proc 'stream-start-marker stream-start-marker)
+
+    ;; Store the original source block location to clean up properly later
+    (process-put proc 'source-block-end
+                 (save-excursion
+                   (goto-char src-position)
+                   (when (re-search-forward "^[ \t]*#\\+END_SRC" nil t)
+                     (progn (forward-line) (line-end-position)))))
+
+    ;; Set up the process filter to handle streaming output
+    (set-process-filter proc (org-llm--create-process-filter))
+
+    ;; Set up the process sentinel to handle completion
+    (set-process-sentinel proc (org-llm--create-process-sentinel))
+
+    ;; Return a placeholder - the real result will be inserted by the sentinel
+    nil))
+
 ;;;###autoload
 (define-minor-mode org-llm-mode
   "Minor mode to handle llm Babel code blocks in Org-mode.
@@ -710,9 +712,5 @@ flags."
     (message "Org LLM mode disabled")))
 
 (provide 'org-llm)
-
-;; Local Variables:
-;; coding: utf-8
-;; End:
 
 ;;; org-llm.el ends here

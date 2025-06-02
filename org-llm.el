@@ -137,12 +137,12 @@ Set to nil to disable the indicator."
 
 (defcustom org-llm-post-process-auto-convert-p t
   "Generally speaking, the text result from `llm` is going to be
- either json (if it's a schema prompt) or markdown. If it's json,
- then we probably want to post-process that json to make it look
- nice. If it's markdown, then we probably want to post-process
- that to convert it to org syntax. This setting, `t' by default,
- will automatically attempt to make those conversions when the
- response is finished coming back."
+either json (if it's a schema prompt) or markdown. If it's json,
+then we probably want to post-process that json to make it look
+nice. If it's markdown, then we probably want to post-process
+that to convert it to org syntax. This setting, `t' by default,
+will automatically attempt to make those conversions when the
+response is finished coming back."
   :type 'boolean
   :group 'org-llm)
 
@@ -199,10 +199,6 @@ For example: '(\"--lua-filter=/path/to/filter.lua\")"
          (schema-p (or (assq :schema llm-flags)
                        (assq :schema-multi llm-flags))))
 
-    ;; (message ":: custom-params %s" custom-params)
-    ;; (message ":: no-conversion-p %s" no-conversion-p)
-    ;; (message ":: apply-post-processing-p %s" apply-post-processing-p)
-
     (cond
      ;; if user is passing :no-conversion, or if
      ;; `org-llm-post-process-auto-convert-p' is set to not convert by default,
@@ -218,7 +214,9 @@ For example: '(\"--lua-filter=/path/to/filter.lua\")"
      (t (org-llm--markdown->org final-output)))))
 
 (defun org-llm--finalize-result (final-output all-params p-src-buffer p-src-position silent-p)
-  "Post-process FINAL-OUTPUT and insert it unless SILENT-P.  Return the processed text."
+  "Post-process FINAL-OUTPUT and insert it into P-SRC-BUFFER at
+P-SRC-POSITION unless SILENT-P. Return the processed text.
+Argument ALL-PARAMS all Babel code block header arguments."
   (condition-case err
       (with-current-buffer p-src-buffer
         (save-excursion
@@ -246,11 +244,9 @@ For example: '(\"--lua-filter=/path/to/filter.lua\")"
     (when db-pair
       (cdr db-pair))))
 
-;; Helper functions for org-babel-execute:llm
-
 (defun org-llm-filter-params (params)
-  "Filter PARAMS to include relevant ones for LLM command line.
-Converts Org Babel header arguments to command line flags for the LLM tool."
+  "Filter PARAMS to include relevant ones for `llm' command line.
+Converts Org Babel header arguments to command line flags for `llm'."
   (let ((processed-params (org-llm--process-header-args params)))
     (mapconcat
      (lambda (param)
@@ -276,7 +272,7 @@ Converts Org Babel header arguments to command line flags for the LLM tool."
      (plist-get processed-params :llm-flags) "")))
 
 (defun org-llm--prepare-command (body params)
-  "Build command string for LLM execution based on BODY and PARAMS."
+  "Build command string for `llm' execution based on BODY and PARAMS."
   (let* ((flags (org-llm-filter-params params))
          (logs-database-path (org-llm-extract-database-param params)))
     (format (concat (when logs-database-path
@@ -315,7 +311,7 @@ Converts Org Babel header arguments to command line flags for the LLM tool."
 
 (defun org-llm--prepare-org-result-placeholder (src-buffer src-position params)
   "Create result placeholder in SRC-BUFFER at SRC-POSITION for streaming.
-PARAMS are the source block parameters."
+PARAMS are the code block header arguments."
   (when (buffer-live-p src-buffer)
     (with-current-buffer src-buffer
       (save-excursion
@@ -351,9 +347,9 @@ PARAMS are the source block parameters."
                   (point-marker))))))))))
 
 (defun org-llm--stream-output (output proc-buffer proc-mark result-marker)
-  "Stream OUTPUT to multiple destinations.
-PROC-BUFFER is process buffer with PROC-MARK as marker.
-SRC-BUFFER and RESULT-MARKER define where to stream in org buffer."
+  "Stream OUTPUT to multiple destinations. PROC-BUFFER is process
+buffer with PROC-MARK as marker. SRC-BUFFER and RESULT-MARKER
+define where to stream in org buffer."
   (let ((clean-output (replace-regexp-in-string "\r" "" output)))
     ;; Stream to process buffer
     (with-current-buffer proc-buffer
@@ -399,8 +395,6 @@ SRC-BUFFER and RESULT-MARKER define where to stream in org buffer."
            (duration (float-time (time-subtract (current-time) p-start-time)))
            (final-output ""))
 
-      (message ":: all-params %s" all-params)
-
       ;; Update the output buffer with completion status
       (with-current-buffer (process-buffer process)
         (goto-char (point-max))
@@ -425,7 +419,6 @@ SRC-BUFFER and RESULT-MARKER define where to stream in org buffer."
                               (string-match "silent" result-params))))
 
           ;; 1 - remove streamed output from org buffer (before finalizing result)
-          ;; (message "::: before remove streamed output: %S" silent-p)
           (let* ((custom-params (plist-get (org-llm--process-header-args all-params) :custom-params))
                  (preserve-stream-param (assq :preserve-stream custom-params))
                  (default-preserve-stream-p silent-p)
@@ -434,10 +427,6 @@ SRC-BUFFER and RESULT-MARKER define where to stream in org buffer."
                                                                default-preserve-stream-p)))
                  (result-marker (process-get process 'result-marker))
                  (stream-start (process-get process 'stream-start-marker)))
-
-            ;; (message "::: before delete %S %S %S %S %S" custom-params preserve-stream-param preserve-stream-p result-marker stream-start)
-            ;; (message "::::: %S1 " result-marker (marker-buffer result-marker))
-            ;; (message "::::: %S2 " stream-start (marker-buffer stream-start))
 
             ;; Clean up streamed content unless preserved
             (when (and (not preserve-stream-p)
@@ -452,7 +441,6 @@ SRC-BUFFER and RESULT-MARKER define where to stream in org buffer."
 
       ;; Remove from active processes list
       (setq org-llm-active-processes (delq process org-llm-active-processes))
-      ;; (message "::: org-llm-active-processes after %S" org-llm-active-processes)
 
       ;; Update mode line
       (when (and org-llm-line-indicator (null org-llm-active-processes))
@@ -462,12 +450,12 @@ SRC-BUFFER and RESULT-MARKER define where to stream in org buffer."
       (message "LLM process %s in %s seconds" status duration))))
 
 (defun org-babel-execute:llm (body params)
-  "Execute a block of LLM code with Babel, with streaming output.
-This function runs asynchronously, allowing editing to continue while
-the LLM process runs in the background.
-With prefix argument, display the output buffer in a split window."
-  (message "Executing org-babel block: llm (waiting for output...)")
-  (message "database path %s" (org-llm-extract-database-param params))
+  "Execute an llm Babel code block -- the BODY is the prompt that
+will be passed to `llm' as a shell command. PARAMS, the code
+block header arguments, will be processed, such that Babel can
+handles the ones it expects in its default way, org-llm can pick
+out application logic (ex. `:no-conversion'), and the rest will
+be passed to the `llm' shell command as flags."
 
   ;; Set up the environment
   (let* ((llm-shell-command (org-llm--prepare-command body params))
@@ -526,14 +514,10 @@ With prefix argument, display the output buffer in a split window."
 
 ;;;###autoload
 (define-minor-mode org-llm-mode
-  "Minor mode to handle `llm` blocks in Org-mode. This mode
- enables execution of LLM (Large Language Model) code blocks in
- Org-mode documents. When enabled, you can create source blocks
- with the 'language' set to `llm` and execute them with C-c C-c.
- In this sense, execution means \"send this code block content to
- Simon Willison's `llm` command line tool, and pass the org babel
- code block header arguments (that are relevant to `llm`) to the
- `llm` command."
+  "Minor mode to handle llm Babel code blocks in Org-mode.
+Execution will send the code block content to Simon Willison's
+`llm` command line tool along with relevant header arguments as
+flags."
   :lighter " LLM"
   :keymap (let ((map (make-sparse-keymap))) map)
   :group 'org-llm
@@ -587,14 +571,14 @@ With prefix argument, display the output buffer in a split window."
 
 (defcustom org-llm-models nil
   "List of available LLM models. This list is populated by
- `org-llm-refresh-models` from the output of `llm models`."
+`org-llm-refresh-models` from the output of `llm models`."
   :type '(repeat string)
   :group 'org-llm)
 
 (defun org-llm--output-to-model-identifier (line)
-  "Return the model token found in LINE produced by 'llm models'.
-The token is everything after the first ": " up to the next space
-or the end of the line.  If LINE does not contain such a token,
+  "Return the model identifier found in LINE produced by 'llm models'.
+The identifier is everything after the first `: ` up to the next space
+or the end of the line.  If LINE does not contain such a identifier,
 return nil."
   (when (string-match ": \\([^ ]+\\)" line)
     (match-string 1 line)))
@@ -615,8 +599,8 @@ return nil."
     org-llm-models))
 
 (defun org-llm--initialize-models ()
-  "Initialize models if needed.
-If `org-llm-models' is empty, refresh the models."
+  "Initialize models if needed. If `org-llm-models' is empty,
+refresh the models."
   (when (null org-llm-models)
     (org-llm-refresh-models)))
 
@@ -644,7 +628,7 @@ If `org-llm-models' is empty, refresh the models."
 
 (defun org-llm-change-default-model ()
   "Set a new default model. With a prefix argument, see the
- current default model."
+current default model."
   (interactive)
   (if current-prefix-arg (shell-command "llm models default")
     (let ((selection (completing-read "Set new default model: " org-llm-models)))
@@ -654,7 +638,7 @@ If `org-llm-models' is empty, refresh the models."
 
 (defun org-llm-browse-conversations ()
   "Browse LLM conversations and yank the ID of the selected
- conversation."
+conversation."
   (interactive)
   (let* ((output (shell-command-to-string "llm logs -t --json"))
          (conversations (json-read-from-string output))
@@ -693,10 +677,10 @@ and the cdr is the corresponding id."
 
 (defun org-llm-query-logs ()
   "Prompt for a search string (in minibuffer via `read-string'),
- query the llm logs by assembling and shelling out to
- `llm logs -t --json -q <search-string>`, put those results into a
- `completing-read', and then kill the conversation id of the
- chosen one."
+query the llm logs by assembling and shelling out to
+`llm logs -t --json -q <search-string>`, put those results into a
+`completing-read', and then kill the conversation id of the
+chosen one."
   (interactive)
   (let* ((search-str (read-string "Enter search string: "))
          (llm-logs-shell-command (format "llm logs -n 0 -t --json -q \"%s\"" search-str))

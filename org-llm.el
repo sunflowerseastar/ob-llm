@@ -276,24 +276,16 @@ Converts Org Babel header arguments to command line flags for `llm'."
      ;; 3 - otherwise, convert the markdown response to Org mode syntax
      (t (org-llm--convert-markdown-response-to-org-mode final-output)))))
 
-(defun org-llm--finalize-result (final-output all-params src-buffer src-position silent-p)
-  "Post-process FINAL-OUTPUT and insert it into SRC-BUFFER at
-SRC-POSITION unless SILENT-P. Return the processed text.
-Argument ALL-PARAMS all Babel code block header arguments."
+(defun org-llm--insert-output (output src-buffer src-position)
+  "Insert OUTPUT into SRC-BUFFER at SRC-POSITION."
   (condition-case err
       (with-current-buffer src-buffer
         (save-excursion
           (goto-char src-position)
-          (let ((processed (org-llm--postprocess-result final-output all-params)))
-            ;; (message ":: processed %S ::" processed)
-            ;; (message "::: all-params %s" all-params)
-            (unless silent-p
-              (with-current-buffer src-buffer
-                (save-excursion
-                  (goto-char src-position)
-                  (org-babel-remove-result all-params)
-                  (org-babel-insert-result processed '("raw"))))
-              processed))))
+          (with-current-buffer src-buffer
+            (save-excursion
+              (goto-char src-position)
+              (org-babel-insert-result output '("raw"))))))
     (error (message "Error in LLM process sentinel: %S" err))))
 
 ;;  ---------------------------------------------------------------------------
@@ -409,9 +401,12 @@ define where to stream in org buffer."
                   (setq final-output (buffer-substring-no-properties start (point-max)))))
             (setq final-output (buffer-string)))))
 
-      ;; Handle process completion (streaming has finished)
-      (when (string-match "finished" event)
-        (let* ((result-params (cdr (assq :results all-params)))
+      ;; handle process completion
+      (when (or (string-match "finished" event)
+                (string-match "exited" event))
+        (let* ((finished-p (string-match "finished" event))
+               (exited-p (string-match "exited" event))
+               (result-params (cdr (assq :results all-params)))
                (silent-p (and result-params
                               (stringp result-params)
                               (string-match "silent" result-params))))
@@ -425,18 +420,23 @@ define where to stream in org buffer."
                   (with-current-buffer (marker-buffer result-marker)
                     (delete-region stream-start result-marker)))))
 
-          ;; 2 - insert output into org-buffer (if not silent)
-          (when (and (buffer-live-p src-buffer) (not silent-p))
-            (org-llm--finalize-result final-output all-params src-buffer src-position silent-p))))
+          ;; 2 - with error or non-zero exit, insert result no matter what
+          (when (and (buffer-live-p src-buffer) exited-p)
+            (org-llm--insert-output final-output src-buffer src-position))
 
-      ;; Remove from active processes list
+          ;; 3 - with regular finish, insert output into org-buffer (if not silent)
+          (when (and (buffer-live-p src-buffer) (not silent-p) finished-p)
+            (let ((processed-final-output (org-llm--postprocess-result final-output all-params)))
+              (org-llm--insert-output processed-final-output src-buffer src-position)))))
+
+      ;; remove from active processes list
       (setq org-llm-active-processes (delq process org-llm-active-processes))
 
-      ;; Update mode line
+      ;; update mode line
       (when (and org-llm-line-indicator (null org-llm-active-processes))
         (force-mode-line-update t))
 
-      ;; Notify user
+      ;; notify user
       (message "LLM process %s in %s seconds" status duration))))
 
 (defun org-llm-list-active-processes ()

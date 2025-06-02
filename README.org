@@ -16,19 +16,19 @@ Using ~llm~ from the command line:
 llm -m 4o "Explain 'a person needs an LLM like a pelican needs a bicycle'"
 #+end_src
 
-Using org-llm from inside an Org-mode buffer:
+Using org-llm from inside an Org mode buffer:
 
 #+begin_src org
-,#+begin_src llm :model openai/gpt-4.1-mini
+,#+begin_src llm :m 4o
 Explain 'a person needs an LLM like a pelican needs a bicycle'
 ,#+end_src
 #+end_src
 
-Then call ~org-ctrl-c-ctrl-c~ with the binding ~C-c C-c~.
+Execute the llm Babel code block by calling ~org-ctrl-c-ctrl-c~ with the binding ~C-c C-c~.
 
 * Features
 
-Since this is a wrapper of the ~llm~ CLI tool, the feature set is mostly ~llm~'s feature set.
+Since this package is a wrapper of the ~llm~ CLI tool, the feature set is mostly ~llm~'s feature set.
 
 Features provided by ~llm~ (found [[https://github.com/simonw/llm][here]]):
 
@@ -41,7 +41,7 @@ Features provided by ~llm~ (found [[https://github.com/simonw/llm][here]]):
 
 Features provided by org-llm:
 
-- interface with ~llm~ from inside Org-mode buffers, passing Babel code block header arguments as flags
+- interface with ~llm~ from inside Org mode buffers, passing Babel code block header arguments as flags
 - supports async, streaming, and concurrent processes across multiple buffers
 - finished responses are automatically converted to prettified JSON or Org mode:
   - ~schema~ and ~schema-multi~ responses are pretty-printed as JSON
@@ -57,12 +57,12 @@ Features provided by org-llm:
 * General Usage
 
 1. Enable with ~(org-llm-mode 1)~
-2. Create an Org source block: ~#+begin_src llm :model "4o"...<body>...#+end_src~
+2. Write a code block: ~#+begin_src llm...<prompt as body>...#+end_src~
 3. Execute with ~C-c C-c~
 
 ** Code Block Header Arguments ("Params") Handling
 
-The [[https://org-babel.readthedocs.io/en/latest/header-args/][header arguments]] for the Babel code blocks are a bit over-loaded in that they might be used (1) to control Org mode Babel code block evaluation behavior, (2) to control org-llm application behavior/settings, or otherwise (3) to be passed along as flags to the ~llm~ command.
+The header arguments ([[https://orgmode.org/manual/Using-Header-Arguments.html][docs]], [[https://org-babel.readthedocs.io/en/latest/header-args/][reference card]]) for the Babel code blocks are a bit overloaded in that they might be used (1) to control Org mode Babel code block evaluation behavior, (2) to control org-llm application behavior/settings, or otherwise (3) to be passed along as flags to the ~llm~ command.
 
 1. *Org babel parameters* are consumed by Org mode, and thus not passed to LLM command: ~:results~, ~:exports~, ~:cache~, ~:noweb~, ~:session~, ~:tangle~, ~:hlines~, etc.
   - ~:results silent~ will emit to the output buffer, but the results will not be streamed or copied in to the org buffer (or post-processed).
@@ -83,28 +83,63 @@ The [[https://org-babel.readthedocs.io/en/latest/header-args/][header arguments]
 
 Search logs from the ~llm~ logs database with ~org-llm-query-logs~. Selecting one will copy (kill) the conversation ID, which can be used to then resume that conversation from any code block.
 
+#+begin_src org
+,#+begin_src llm :system "single word response"
+what is the longest word in the English language that is all vowels?
+,#+end_src
+
+,#+RESULTS:
+Euouae
+
+
+,#+begin_src llm :s "single word response"
+who is halfway between Rameau and Bach?
+,#+end_src
+
+,#+RESULTS:
+Handel
+
+Use ~:continue~ to keep going with the most recent conversation.
+
+,#+begin_src llm :continue :s "terse"
+who would come before Rameau in this same line
+,#+end_src
+
+,#+RESULTS:
+Couperin
+
+
+Now call ~org-llm-query-logs~, search for "vowels", then select the original
+conversation. Pass its ID with the header argument ~:cid~ or ~:conversation~.
+
+,#+begin_src llm :cid 01jwrgrwaj73adxm7prx46gpxj :s "terse"
+definition?
+,#+end_src
+
+,#+RESULTS:
+A medieval musical notation representing the vowel sounds of "seculorum Amen"
+sung at the end of psalms.
+#+end_src
+
 ** Customization
 
-- ~org-llm-output-buffer~ - Buffer name for displaying streaming output
-- ~org-llm-mode-line-indicator~ - Text to display in mode line during active processes
-
-| ~org-llm-line-indicator~                              | What to show in the mode line while a process is active. Default is "🦆"                                 |
-| ~org-llm-post-process-auto-convert-p~                 | Whether to convert completed responses to prettified JSON (schema) or Org mode (regular). Default is ~t~  |
-| ~org-llm-models~                                      | Models available to yank, kill, and set as default. Update this by ~org-llm-refresh-models~, not manually |
+| ~org-llm-line-indicator~                              | What to show in the mode line while a process is active. Default is "🦆"                                |
+| ~org-llm-post-process-auto-convert-p~                 | Whether to convert completed responses to prettified JSON (schema) or Org mode (regular). Default is ~t~ |
+| ~org-llm-models~                                      | Models available to yank, kill, and set as default. Update this by calling ~org-llm-refresh-models~      |
 | ~org-llm-pandoc-additional-org-mode-conversion-flags~ | Additional flags to pass to Pandoc when converting general responses to Org mode                         |
 
 *** Converting Markdown to Pandoc
 
 When a general response is finished (as opposed to a code block with header arguments of ~:schema~ or ~:schema-multi~ ([[https://llm.datasette.io/en/stable/schemas.html][docs]])), it is automatically converted to Org mode using [[https://pandoc.org/][Pandoc]]. This can be turned off for a single code block with a header argument of ~:no-conversion~, or as a customization by setting ~org-llm-post-process-auto-convert-p~ to ~nil~.
 
-Personally, I do not want the Org mode PROPERTY drawers from the conversion, so I add a flag that ~org-llm~ should pass along to Pandoc:
+Additional flags can be passed to Pandoc during the "convert the completed markdown response to org mode" step using ~org-llm-pandoc-additional-org-mode-conversion-flags~. For instance, to exclude the PROPERTY drawers from Org headings:
 
 #+begin_src emacs-lisp
 (setq org-llm-pandoc-additional-org-mode-conversion-flags
       '("--lua-filter=/Users/myuser/.local/share/remove-header-attr.lua"))
 #+end_src
 
-And here are the contents of my ~remove-header-attr.lua~ file at that location:
+And then these contents for the ~remove-header-attr.lua~ file are at that location:
 
 #+begin_src lua
 function Header (header)

@@ -9,7 +9,7 @@
 ;; Keywords: llm org-mode tools convenience org babel
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
-;; IMPORTANT: Also requires `llm', version 0.26
+;; IMPORTANT: Also requires `llm' CLI tool, version 0.26
 ;; Please see https://llm.datasette.io for installation
 
 ;; This file is not part of GNU Emacs.
@@ -30,38 +30,42 @@
 ;;; Commentary:
 
 ;; org-llm provides integration between Org-mode and Simon Willison's LLM
-;; command-line tool (further referred to simply as `llm`), enabling interaction
+;; command-line tool (further referred to simply as `llm'), enabling interaction
 ;; with large language models directly from Org documents. If you don't have
-;; `llm` installed or configured, please see https://llm.datasette.io to follow
-;; installation instructions and orient yourself first.
+;; `llm' installed or configured, please see https://llm.datasette.io to follow
+;; setup instructions and orient yourself first.
 ;;
 ;; The idea:
-;; - interface with Simon Willison's `llm` tool via Emacs through org mode
-;;   - code block header arguments pass through to `llm` as flags, so you can
+;; - interface with Simon Willison's `llm' tool via Emacs through Org mode
+;;   - code block header arguments pass through to `llm' as flags, so you can
 ;;     specify model, file, website, "continue", conversation id, database, etc.
-;; - execute prompts in babel src code blocks with C-c C-c
-;;   - results stream back into RESULTS
-;;   - final streamed result is converted by pandoc into org mode by default
-;;     - (disable this with code block header argument `:results silent`)
+;; - execute prompts in Babel code blocks with `C-c C-c'
+;;   - results stream back into #+RESULTS
+;;   - completed response is converted to Org mode syntax or prettified JSON
 ;;
 ;; Usage:
 ;; (require 'org-llm)
 ;; (org-llm-mode 1)
 ;;
-;; Org babel code blocks with a "language" of 'llm' shell out to `llm`:
+;; Org Babel code blocks with a "language" of llm shell out to `llm', with the
+;; code block's <body> serving as the prompt:
 ;;
 ;; #+begin_src llm
 ;; Explain autopoiesis
 ;; #+end_src
 ;;
-;; When "executing" this code block with C-c C-c, it will stream the results
-;; into a RESULTS block, and then convert the finalized output into org-mode
-;; using pandoc. If the code block has a header argument of `:results silent`,
-;; the finalized streamed result will not be converted into org-mode.
+;; When executing this code block with `C-c C-c', it will stream the response
+;; into #+RESULTS, and then optionally convert the finalized output into Org
+;; mode syntax using Pandoc (or prettified JSON if the code block is using
+;; `:schema' or `:schema-multi'). If the code block has a header argument of
+;; `:no-conversion', the finalized streamed result will not be converted. If the
+;; code block has a header argument of `:results silent', then the response will
+;; go into an output buffer, but not stream into or be placed into the
+;; Org mode buffer where the code block is.
 ;;
-;; Header arguments that make sense for the `llm` shell command are passed
-;; along. For example, to use a model called "my-model" and continue the most
-;; recent conversation:
+;; Code block header arguments that make sense for the `llm' shell command are
+;; passed along. For example, to use a model called "my-model" and continue the
+;; most recent conversation:
 ;;
 ;; #+begin_src llm :model my-model :continue
 ;; What criticism and opposition has it faced over time, and how has it fared
@@ -97,7 +101,7 @@ Set to nil to disable the indicator."
   :group 'org-llm)
 
 (defcustom org-llm-post-process-auto-convert-p t
-  "Generally speaking, the text result from `llm` is going to be
+  "Generally speaking, the text result from `llm' is going to be
 either json (if it's a schema prompt) or markdown. If it's json,
 then we probably want to post-process that json to make it look
 nice. If it's markdown, then we probably want to post-process
@@ -121,8 +125,13 @@ single flag or flag with value. For example:
   "List of currently running LLM processes.")
 
 (defcustom org-llm-models nil
-  "List of available LLM models. This list is populated by
-`org-llm-refresh-models` from the output of `llm models`."
+  "List of available LLM models. This list is populated with
+`org-llm-refresh-models' by converting and inserting the output
+from the shell command `llm models'. You should not have to
+adjust `org-llm-models' manually, but you will want to run
+`org-llm-refresh-models' whenever you update the `llm' plugins
+or otherwise change the models that you know will be available
+to `llm'."
   :type '(repeat string)
   :group 'org-llm)
 
@@ -339,7 +348,7 @@ PARAMS are the code block header arguments."
                   ;; If not silent, use the results block position
                   (progn
                     (re-search-forward "^[ \t]*#\\+RESULTS:" nil t)
-                    ;; Skip the header and `#+begin_example` line to stream
+                    ;; Skip the header and `#+begin_example' line to stream
                     ;; directly *inside* the example block.
                     (forward-line 2)
                     (point-marker))
@@ -561,7 +570,7 @@ be passed to the `llm' shell command as flags."
 
 (defun org-llm--output-to-model-identifier (line)
   "Return the model identifier found in LINE produced by 'llm models'.
-The identifier is everything after the first `: ` up to the next space
+The identifier is everything after the first `: ' up to the next space
 or the end of the line.  If LINE does not contain such a identifier,
 return nil."
   (when (string-match ": \\([^ ]+\\)" line)
@@ -662,7 +671,7 @@ and the cdr is the corresponding id."
 (defun org-llm-query-logs ()
   "Prompt for a search string (in minibuffer via `read-string'),
 query the llm logs by assembling and shelling out to
-`llm logs -t --json -q <search-string>`, put those results into a
+`llm logs -t --json -q <search-string>', put those results into a
 `completing-read', and then kill the conversation id of the
 chosen one."
   (interactive)
@@ -687,7 +696,7 @@ chosen one."
 (define-minor-mode org-llm-mode
   "Minor mode to handle llm Babel code blocks in Org-mode.
 Execution will send the code block content to Simon Willison's
-`llm` command line tool along with relevant header arguments as
+`llm' command line tool along with relevant header arguments as
 flags."
   :lighter " LLM"
   :keymap (let ((map (make-sparse-keymap))) map)

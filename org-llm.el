@@ -44,7 +44,7 @@
 ;;   - results stream back into #+RESULTS
 ;;   - completed response is converted to Org mode syntax or prettified JSON
 ;;
-;; Usage:
+;;; Usage:
 ;;
 ;; Org Babel code blocks with a "language" of llm shell out to `llm', with the
 ;; code block's <body> serving as the prompt:
@@ -57,10 +57,12 @@
 ;; into #+RESULTS, and then optionally convert the finalized output into Org
 ;; mode syntax using Pandoc (or prettified JSON if the code block is using
 ;; `:schema' or `:schema-multi'). If the code block has a header argument of
-;; `:no-conversion', the finalized streamed result will not be converted. If the
-;; code block has a header argument of `:results silent', then the response will
-;; go into an output buffer, but not stream into or be placed into the
-;; Org mode buffer where the code block is.
+;; `:no-conversion', the finalized streamed result will not be converted.
+;;
+;; If the code block has a header argument of `:results silent', then the
+;; response will still go into an output buffer (called the process buffer or
+;; `proc-buffer' in the code), but not stream into or be placed into the Org
+;; mode buffer where the code block is (aka source buffer or `src-buffer').
 ;;
 ;; Code block header arguments that make sense for the `llm' shell command are
 ;; passed along. For example, to use a model called "my-model" and continue the
@@ -88,7 +90,7 @@
 (defvar org-llm-active-processes nil
   "List of currently running LLM processes.")
 
-(defcustom org-llm-line-indicator "🦆"
+(defcustom org-llm-line-indicator "★"
   "Text to display in the mode line when an LLM process is running.
 Set to nil to disable the indicator."
   :type '(choice (string :tag "Indicator text")
@@ -96,32 +98,41 @@ Set to nil to disable the indicator."
   :group 'org-llm)
 
 (defcustom org-llm-post-process-auto-convert-p t
-  "Generally speaking, the text result from `llm' is going to be
+  "Whether to format (json) & convert (md) responses.
+
+    chat (markdown) -> Org mode, schema (JSON) -> prettified JSON
+
+Generally speaking, the text result from `llm' is going to be
 either json (if it's a schema prompt) or markdown. If it's json,
-then we probably want to post-process that json to make it look
-nice. If it's markdown, then we probably want to post-process
-that to convert it to org syntax. This setting, `t' by default,
-will automatically attempt to make those conversions when the
-response is finished coming back."
+then format (prettify) the json. If it's markdown, then convert
+it to Org syntax. This setting, t by default, will automatically
+attempt to make those conversions when the response is finished
+coming back.
+
+When this is t, you can override the conversion on any code block
+with the header argument `:no-conversion'."
   :type 'boolean
   :group 'org-llm)
 
 (defcustom org-llm-pandoc-additional-org-mode-conversion-flags nil
-  "Additional flags to pass to pandoc when converting markdown to
-org format. This should be a list of strings, each string being a
-single flag or flag with value. For example:
-'(\"--lua-filter=/path/to/filter.lua\")"
+  "Additional flags to pass to Pandoc when converting from md.
+
+This should be a list of strings, each string being a single flag
+or flag with value. For example:
+
+    (\"--lua-filter=/path/to/filter.lua\")"
   :type '(repeat string)
   :group 'org-llm)
 
 (defcustom org-llm-models nil
-  "List of available LLM models. This list is populated with
-`org-llm-refresh-models' by converting and inserting the output
-from the shell command `llm models'. You should not have to
-adjust `org-llm-models' manually, but you will want to run
-`org-llm-refresh-models' whenever you update the `llm' plugins
-or otherwise change the models that you know will be available
-to `llm'."
+  "List of available LLM models.
+
+This list is populated with `org-llm-refresh-models' by
+converting and inserting the output from the shell command `llm
+models'. You should not have to adjust `org-llm-models' manually,
+but you will want to run `org-llm-refresh-models' whenever you
+update the `llm' plugins or otherwise change the models that you
+know will be available to `llm'."
   :type '(repeat string)
   :group 'org-llm)
 
@@ -132,6 +143,7 @@ to `llm'."
 (defun org-llm--process-header-args (params)
   "Process header arguments in PARAMS and return categorized results.
 Returns a plist with keys:
+
 - :org-code-block-header-args - standard org babel header arguments
 - :custom-params - custom parameters for special handling
 - :llm-flags - all remaining header arguments go to `llm' command"
@@ -219,11 +231,11 @@ Converts Org Babel header arguments to command line flags for `llm'."
   (force-mode-line-update t))
 
 ;; ---------------------------------------------------------------------------
-;; Post-processing helpers (markdown → Org, insertion, etc.)
+;; Post-processing
 ;; ---------------------------------------------------------------------------
 
 (defun org-llm--remove-trailing-backslashes (text)
-  "Remove trailing double backslashes from TEXT that appear after pandoc conversion."
+  "Remove trailing double backslashes from TEXT."
   (replace-regexp-in-string "\\\\\\\\$" "" text))
 
 (defun org-llm--prettify-json-response (final-output)
@@ -255,8 +267,9 @@ Converts Org Babel header arguments to command line flags for `llm'."
             text)))
     text))
 
-(defun org-llm--postprocess-result (final-output params)
-  "Apply all requested post-processing steps to FINAL-OUTPUT according to PARAMS."
+;; TODO move param stuff to org-llm--create-process-sentinel
+(defun org-llm--post-process-result (final-output params)
+  "Post-process FINAL-OUTPUT per PARAMS."
   (let* ((processed-params (org-llm--process-header-args params))
          (custom-params (plist-get processed-params :custom-params))
          (llm-flags (plist-get processed-params :llm-flags))
@@ -276,6 +289,10 @@ Converts Org Babel header arguments to command line flags for `llm'."
      ;; 3 - otherwise, convert the markdown response to Org mode syntax
      (t (org-llm--convert-markdown-response-to-org-mode final-output)))))
 
+;;  ---------------------------------------------------------------------------
+;;; Streams and processes
+;;  ---------------------------------------------------------------------------
+
 (defun org-llm--insert-output (output src-buffer src-position)
   "Insert OUTPUT into SRC-BUFFER at SRC-POSITION."
   (condition-case err
@@ -288,12 +305,9 @@ Converts Org Babel header arguments to command line flags for `llm'."
               (org-babel-insert-result output '("raw"))))))
     (error (message "Error in LLM process sentinel: %S" err))))
 
-;;  ---------------------------------------------------------------------------
-;;; Streams and processes
-;;  ---------------------------------------------------------------------------
-
 (defun org-llm--start-process (llm-shell-command output-buffer)
-  "Start LLM process running LLM-SHELL-COMMAND with output to OUTPUT-BUFFER."
+  "Start `llm' process with LLM-SHELL-COMMAND, out to OUTPUT-BUFFER."
+
   (let ((proc (start-process-shell-command "org-babel-llm" output-buffer llm-shell-command)))
     ;; Add to active processes list
     (push proc org-llm-active-processes)
@@ -301,6 +315,7 @@ Converts Org Babel header arguments to command line flags for `llm'."
 
 (defun org-llm--prepare-org-result-placeholder (src-buffer src-position params)
   "Create result placeholder in SRC-BUFFER at SRC-POSITION for streaming.
+
 PARAMS are the code block header arguments."
   (when (buffer-live-p src-buffer)
     (with-current-buffer src-buffer
@@ -337,9 +352,10 @@ PARAMS are the code block header arguments."
                   (point-marker))))))))))
 
 (defun org-llm--stream-output (output proc-buffer proc-mark result-marker)
-  "Stream OUTPUT to multiple destinations. PROC-BUFFER is process
-buffer with PROC-MARK as marker. SRC-BUFFER and RESULT-MARKER
-define where to stream in org buffer."
+  "Stream OUTPUT into the process buffer & src buffer.
+
+PROC-BUFFER is process buffer with PROC-MARK as marker.
+RESULT-MARKER define where to stream in src Org buffer."
   (let ((clean-output (replace-regexp-in-string "\r" "" output)))
     ;; Stream to process buffer
     (with-current-buffer proc-buffer
@@ -426,7 +442,7 @@ define where to stream in org buffer."
 
           ;; 3 - with regular finish, insert output into org-buffer (if not silent)
           (when (and (buffer-live-p src-buffer) (not silent-p) finished-p)
-            (let ((processed-final-output (org-llm--postprocess-result final-output all-params)))
+            (let ((processed-final-output (org-llm--post-process-result final-output all-params)))
               (org-llm--insert-output processed-final-output src-buffer src-position)))))
 
       ;; remove from active processes list
@@ -484,22 +500,22 @@ define where to stream in org buffer."
 ;; ---------------------------------------------------------------------------
 
 (defun org-llm--output-to-model-identifier (line)
-  "Return the model identifier found in LINE produced by 'llm models'.
-The identifier is everything after the first `: ' up to the next space
-or the end of the line.  If LINE does not contain such a identifier,
-return nil."
+  "Return the model identifier found per LINE from `llm models'.
+
+The identifier is everything after the first `: ' up to the next
+space or the end of the line. If LINE does not contain such a
+identifier, return nil."
   (when (string-match ": \\([^ ]+\\)" line)
     (match-string 1 line)))
 
 (defun org-llm-refresh-models ()
-  "Update `org-llm-models' with the current output of 'llm models'."
+  "Update `org-llm-models' with `llm models' shell output."
   (interactive)
   (message "org-llm-models are being refreshed via the `llm models` command...")
-  (let* ((raw    (shell-command-to-string "llm models"))
-         (lines  (split-string raw "\n" t))      ; drop empty strings
-         (models (delq nil                       ; remove any nils
+  (let* ((raw (shell-command-to-string "llm models"))
+         (lines (split-string raw "\n" t)) ; drop empty strings
+         (models (delq nil ; remove nils
                        (mapcar #'org-llm--output-to-model-identifier lines))))
-    ;; Save models to the customization variable
     (setq org-llm-models models)
     (customize-save-variable 'org-llm-models models)
     (message "org-llm-models have been refreshed. There are %d models available."
@@ -507,8 +523,7 @@ return nil."
     org-llm-models))
 
 (defun org-llm--initialize-models ()
-  "Initialize models if needed. If `org-llm-models' is empty,
-refresh the models."
+  "Initialize `org-llm-models' if it's empty."
   (when (null org-llm-models)
     (org-llm-refresh-models)))
 
@@ -516,17 +531,17 @@ refresh the models."
 (add-hook 'after-init-hook 'org-llm--initialize-models)
 
 (defun org-llm-yank-a-model-name ()
-  "Select a model and yank it into the current buffer."
+  "Select a model and yank (paste) it into the current buffer."
   (interactive)
-  (let ((selection (completing-read "Paste (yank) a model name: " org-llm-models)))
+  (let ((selection (completing-read "Yank a model name: " org-llm-models)))
     (insert selection)
     (message "Yanked: %s" selection)))
 
-(defun org-llm-copy-a-model-name ()
-  "Select a model and copy (kill) it."
+(defun org-llm-kill-a-model-name ()
+  "Select a model and kill (copy) it."
   (interactive)
-  (let ((selection (completing-read "Copy (kill) a model name: " org-llm-models)))
-    (kill-new selection)  ; Copy the selected item to the clipboard
+  (let ((selection (completing-read "Kill a model name: " org-llm-models)))
+    (kill-new selection)
     (message "Copied: %s" selection)))
 
 (defun org-llm-echo-default-model ()
@@ -535,8 +550,9 @@ refresh the models."
   (shell-command "llm models default"))
 
 (defun org-llm-change-default-model ()
-  "Set a new default model. With a prefix argument, see the
-current default model."
+  "Set a new default model.
+
+With a prefix argument, see the current default model."
   (interactive)
   (if current-prefix-arg (shell-command "llm models default")
     (let ((selection (completing-read "Set new default model: " org-llm-models)))
@@ -549,8 +565,7 @@ current default model."
 ;;  ---------------------------------------------------------------------------
 
 (defun org-llm-browse-conversations ()
-  "Browse LLM conversations and yank the ID of the selected
-conversation."
+  "Browse LLM conversations to yank an ID."
   (interactive)
   (let* ((output (shell-command-to-string "llm logs -t --json"))
          (conversations (json-read-from-string output))
@@ -571,14 +586,15 @@ conversation."
 
 (defun org-llm-query-logs-candidates (json-data)
   "Build an association list of candidates from JSON-DATA.
-Each candidate is a cons cell where the car is a formatted string that
-displays conversation_name, prompt, conversation_model, and id in columns,
-and the cdr is the corresponding id."
+
+Each candidate is a cons cell where the car is a formatted string
+that displays conversation_name, prompt, conversation_model, and
+id in columns, and the cdr is the corresponding id."
   (cl-loop for entry across json-data
-           for conv    = (alist-get 'conversation_name entry)
-           for prompt  = (alist-get 'prompt entry)
-           for model   = (alist-get 'conversation_model entry)
-           for id      = (alist-get 'conversation_id entry)
+           for conv = (alist-get 'conversation_name entry)
+           for prompt = (alist-get 'prompt entry)
+           for model = (alist-get 'conversation_model entry)
+           for id = (alist-get 'conversation_id entry)
            collect
            (cons (format "%-40s %-60s %-20s %s"
                          (or conv "")
@@ -588,9 +604,11 @@ and the cdr is the corresponding id."
                  id)))
 
 (defun org-llm-query-logs ()
-  "Prompt for a search string (in minibuffer via `read-string'),
-query the llm logs by assembling and shelling out to
-`llm logs -t --json -q <search-string>', put those results into a
+  "Search the llm logs with a query string.
+
+Prompt for a search string (in minibuffer via `read-string'),
+query the llm logs by assembling and shelling out to `llm logs -t
+--json -q <search-string>', put those results into a
 `completing-read', and then kill the conversation id of the
 chosen one."
   (interactive)
@@ -602,26 +620,27 @@ chosen one."
          (data (ignore-errors (json-read-from-string json-output))))
     (if (not data)
         (message "No data returned from command: %s" llm-logs-shell-command)
-      (let* ((candidates (org-llm-query-logs-candidates data))
-             ;; completing-read expects a collection of strings; our
-             ;; candidates list is an alist of (display . id).
-             (choice (completing-read "Select log: " candidates nil t)))
-        (when choice
-          (let ((conversation-id (cdr (assoc choice candidates))))
+      (let* ((candidates
+              (org-llm-query-logs-candidates data)) ; alist of (display . id)
+             ;; completing-read expects a collection of strings;
+             (selection (completing-read "Select log: " candidates nil t)))
+        (when selection
+          (let ((conversation-id (cdr (assoc selection candidates))))
             (kill-new conversation-id)
-            (message "Copied (killed) conversation ID: %s" conversation-id)))))))
+            (message "Killed conversation ID: %s" conversation-id)))))))
 
 ;;  ---------------------------------------------------------------------------
 ;;; Main minor mode setup
 ;;  ---------------------------------------------------------------------------
 
 (defun org-babel-execute:llm (body params)
-  "Execute an llm Babel code block -- the BODY is the prompt that
-will be passed to `llm' as a shell command. PARAMS, the code
-block header arguments, will be processed, such that Babel can
-handles the ones it expects in its default way, org-llm can pick
-out application logic (ex. `:no-conversion'), and the rest will
-be passed to the `llm' shell command as flags."
+  "Pass an llm code block to `llm'.
+
+The BODY is the prompt that will be passed to `llm' as a shell
+command. PARAMS (the code block header arguments) will be
+processed such that Babel gets the ones it expects, org-llm gets
+the ones it wants (ex. `:no-conversion'), and the rest are passed
+to the `llm' shell command as flags."
 
   ;; Set up the environment
   (let* ((llm-shell-command (org-llm--prepare-command body params))
@@ -634,27 +653,26 @@ be passed to the `llm' shell command as flags."
          (result-marker nil)
          (stream-start-marker nil))
 
-    (message "Running LLM command: %s" llm-shell-command)
+    (message "llm shell command: %s" llm-shell-command)
 
-    ;; Display the buffer in a window only when prefix arg is provided
+    ;; with a prefix argument, split and show the output buffer
     (when current-prefix-arg
       (unless (get-buffer-window buffer)
         (let ((new-window (split-window-below)))
           (set-window-buffer new-window buffer))))
 
-    ;; Prepare a place in the org buffer for streaming results
+    ;; record the place in the src buffer for streaming results
     (setq result-marker (org-llm--prepare-org-result-placeholder src-buffer src-position params))
-    ;; Record the immutable start of the streaming region
     (when result-marker
       (setq stream-start-marker (copy-marker result-marker nil)))
 
-    ;; Set up and start the process
+    ;; start the process
     (setq proc (org-llm--start-process llm-shell-command buffer))
 
-    ;; Update the mode line
+    ;; update mode line
     (org-llm--setup-mode-line)
 
-    ;; Store context information as process properties
+    ;; store context as process properties
     (process-put proc 'all-params params)
     (process-put proc 'start-time start-time)
     (process-put proc 'src-buffer src-buffer)
@@ -662,25 +680,26 @@ be passed to the `llm' shell command as flags."
     (process-put proc 'result-marker result-marker)
     (process-put proc 'stream-start-marker stream-start-marker)
 
-    ;; Store the original source block location to clean up properly later
+    ;; store the original source block location to clean up properly later
     (process-put proc 'source-block-end
                  (save-excursion
                    (goto-char src-position)
                    (when (re-search-forward "^[ \t]*#\\+END_SRC" nil t)
                      (progn (forward-line) (line-end-position)))))
 
-    ;; Set up the process filter to handle streaming output
+    ;; set the process filter to handle the received stream
     (set-process-filter proc (org-llm--create-process-filter))
 
-    ;; Set up the process sentinel to handle completion
+    ;; set the process sentinel for completion/exit handling
     (set-process-sentinel proc (org-llm--create-process-sentinel))
 
-    ;; Return a placeholder - the real result will be inserted by the sentinel
+    ;; return a placeholder -- filter & sentinel handle everything
     nil))
 
 ;;;###autoload
 (define-minor-mode org-llm-mode
   "Minor mode to handle llm Babel code blocks in Org-mode.
+
 Execution will send the code block content to Simon Willison's
 `llm' command line tool along with relevant header arguments as
 flags."

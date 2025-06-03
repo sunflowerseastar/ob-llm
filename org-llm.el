@@ -267,27 +267,22 @@ Converts Org Babel header arguments to command line flags for `llm'."
             text)))
     text))
 
-;; TODO move param stuff to org-llm--create-process-sentinel
-(defun org-llm--post-process-result (final-output params)
-  "Post-process FINAL-OUTPUT per PARAMS."
-  (let* ((processed-params (org-llm--process-header-args params))
-         (custom-params (plist-get processed-params :custom-params))
-         (llm-flags (plist-get processed-params :llm-flags))
-         (no-conversion-p (assq :no-conversion custom-params))
-         (schema-p (or (assq :schema llm-flags)
-                       (assq :schema-multi llm-flags))))
+(defun org-llm--post-process-result (final-output schema-p no-conversion-p)
+  "Post-process FINAL-OUTPUT.
 
-    (cond
-     ;; 1 - do not perform any post-process conversion
-     ((or no-conversion-p (not org-llm-post-process-auto-convert-p)) final-output)
+SCHEMA-P and NO-CONVERSION-P are used to determine how to
+process."
+  (cond
+   ;; 1 - do not perform any post-process conversion
+   ((or no-conversion-p (not org-llm-post-process-auto-convert-p)) final-output)
 
-     ;; 2 - it's a schema, so prettify the JSON response
-     (schema-p
-      (let ((final-output-after-pp-json (org-llm--prettify-json-response final-output)))
-        (format "#+begin_src json\n%s\n#+end_src" final-output-after-pp-json)))
+   ;; 2 - it's a schema, so prettify the JSON response
+   (schema-p
+    (let ((final-output-after-pp-json (org-llm--prettify-json-response final-output)))
+      (format "#+begin_src json\n%s\n#+end_src" final-output-after-pp-json)))
 
-     ;; 3 - otherwise, convert the markdown response to Org mode syntax
-     (t (org-llm--convert-markdown-response-to-org-mode final-output)))))
+   ;; 3 - otherwise, convert the markdown response to Org mode syntax
+   (t (org-llm--convert-markdown-response-to-org-mode final-output))))
 
 ;;  ---------------------------------------------------------------------------
 ;;; Streams and processes
@@ -442,7 +437,14 @@ RESULT-MARKER define where to stream in src Org buffer."
 
           ;; 3 - with regular finish, insert output into org-buffer (if not silent)
           (when (and (buffer-live-p src-buffer) (not silent-p) finished-p)
-            (let ((processed-final-output (org-llm--post-process-result final-output all-params)))
+            (let* ((processed-params (org-llm--process-header-args all-params))
+                   (llm-flags (plist-get processed-params :llm-flags))
+                   (schema-p (or (assq :schema llm-flags)
+                                 (assq :schema-multi llm-flags)))
+                   (custom-params (plist-get processed-params :custom-params))
+                   (no-conversion-p (assq :no-conversion custom-params))
+                   (processed-final-output
+                    (org-llm--post-process-result final-output schema-p no-conversion-p)))
               (org-llm--insert-output processed-final-output src-buffer src-position)))))
 
       ;; remove from active processes list

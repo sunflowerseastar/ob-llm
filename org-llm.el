@@ -172,10 +172,11 @@ Returns a plist with keys:
           :custom-params custom-params
           :llm-flags llm-flags)))
 
-(defun org-llm--filter-params (params)
-  "Filter PARAMS to include relevant ones for `llm' command line.
+(defun org-llm--filter-params (raw-params)
+  "Filter RAW-PARAMS; keep relevant ones for `llm' command line.
+
 Converts Org Babel header arguments to command line flags for `llm'."
-  (let ((processed-params (org-llm--process-header-args params)))
+  (let ((processed-params (org-llm--process-header-args raw-params)))
     (mapconcat
      (lambda (param)
        (let ((key (symbol-name (car param)))
@@ -199,10 +200,10 @@ Converts Org Babel header arguments to command line flags for `llm'."
           (t ""))))
      (plist-get processed-params :llm-flags) "")))
 
-(defun org-llm--prepare-command (body params)
-  "Build command string for `llm' execution based on BODY and PARAMS."
-  (let* ((flags (org-llm--filter-params params))
-         (logs-database-path (alist-get :database params)))
+(defun org-llm--prepare-command (body raw-params)
+  "Build `llm' shell command based on BODY and RAW-PARAMS."
+  (let* ((flags (org-llm--filter-params raw-params))
+         (logs-database-path (alist-get :database raw-params)))
     (format (concat (when logs-database-path
                       (format "LLM_USER_PATH=%s " logs-database-path))
                     "llm %s %s")
@@ -363,8 +364,8 @@ RESULT-MARKER define where to stream in src Org buffer."
 
     ;; Stream to org buffer result if marker is available and it's not silent
     (let* ((proc (get-buffer-process proc-buffer))
-           (params (when proc (process-get proc 'all-params)))
-           (result-params (cdr (assq :results params)))
+           (raw-params (when proc (process-get proc 'raw-params)))
+           (result-params (cdr (assq :results raw-params)))
            (silent-p (and result-params
                           (stringp result-params)
                           (string-match "silent" result-params))))
@@ -388,7 +389,7 @@ RESULT-MARKER define where to stream in src Org buffer."
 (defun org-llm--create-process-sentinel ()
   "Create process sentinel function for handling completion."
   (lambda (process event)
-    (let* ((all-params (process-get process 'all-params))
+    (let* ((raw-params (process-get process 'raw-params))
            (src-buffer (process-get process 'src-buffer))
            (src-position (process-get process 'src-position))
            (start-time (process-get process 'start-time))
@@ -417,7 +418,7 @@ RESULT-MARKER define where to stream in src Org buffer."
                 (string-match "exited" event))
         (let* ((finished-p (string-match "finished" event))
                (exited-p (string-match "exited" event))
-               (result-params (cdr (assq :results all-params)))
+               (result-params (cdr (assq :results raw-params)))
                (silent-p (and result-params
                               (stringp result-params)
                               (string-match "silent" result-params))))
@@ -437,7 +438,7 @@ RESULT-MARKER define where to stream in src Org buffer."
 
           ;; 3 - with regular finish, insert output into org-buffer (if not silent)
           (when (and (buffer-live-p src-buffer) (not silent-p) finished-p)
-            (let* ((processed-params (org-llm--process-header-args all-params))
+            (let* ((processed-params (org-llm--process-header-args raw-params))
                    (llm-flags (plist-get processed-params :llm-flags))
                    (schema-p (or (assq :schema llm-flags)
                                  (assq :schema-multi llm-flags)))
@@ -635,17 +636,17 @@ chosen one."
 ;;; Main minor mode setup
 ;;  ---------------------------------------------------------------------------
 
-(defun org-babel-execute:llm (body params)
+(defun org-babel-execute:llm (body raw-params)
   "Pass an llm code block to `llm'.
 
 The BODY is the prompt that will be passed to `llm' as a shell
-command. PARAMS (the code block header arguments) will be
+command. RAW-PARAMS (the code block header arguments) will be
 processed such that Babel gets the ones it expects, org-llm gets
 the ones it wants (ex. `:no-conversion'), and the rest are passed
 to the `llm' shell command as flags."
 
   ;; Set up the environment
-  (let* ((llm-shell-command (org-llm--prepare-command body params))
+  (let* ((llm-shell-command (org-llm--prepare-command body raw-params))
          (buffer-name (format "*org-llm-output-%s*" (make-temp-name "")))
          (buffer (org-llm--create-output-buffer buffer-name llm-shell-command))
          (src-buffer (current-buffer))
@@ -664,7 +665,7 @@ to the `llm' shell command as flags."
           (set-window-buffer new-window buffer))))
 
     ;; record the place in the src buffer for streaming results
-    (setq result-marker (org-llm--prepare-org-result-placeholder src-buffer src-position params))
+    (setq result-marker (org-llm--prepare-org-result-placeholder src-buffer src-position raw-params))
     (when result-marker
       (setq stream-start-marker (copy-marker result-marker nil)))
 
@@ -675,7 +676,7 @@ to the `llm' shell command as flags."
     (org-llm--setup-mode-line)
 
     ;; store context as process properties
-    (process-put proc 'all-params params)
+    (process-put proc 'raw-params raw-params)
     (process-put proc 'start-time start-time)
     (process-put proc 'src-buffer src-buffer)
     (process-put proc 'src-position src-position)

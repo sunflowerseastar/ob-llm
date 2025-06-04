@@ -85,7 +85,6 @@
   :tag "org-llm"
   :group 'org-babel)
 
-(defvar org-src-lang-modes)
 (defvar org-babel-load-languages)
 (defvar org-llm-active-processes nil
   "List of currently running LLM processes.")
@@ -710,10 +709,12 @@ flags."
   :group 'org-llm
   (if org-llm-mode
       (progn
-        (add-to-list 'org-src-lang-modes '("llm" . fundamental))
-        (add-to-list 'org-babel-load-languages '(llm . t))
-        (org-babel-do-load-languages 'org-babel-load-languages org-babel-load-languages)
+        (unless (assq 'llm org-babel-load-languages)
+          (add-to-list 'org-babel-load-languages '(llm . t)))
+        (org-babel-do-load-languages 'org-babel-load-languages
+                                     org-babel-load-languages)
         (message "Org LLM mode enabled"))
+    (setq org-babel-load-languages (assq-delete-all 'llm org-babel-load-languages))
     (message "Org LLM mode disabled")))
 
 (provide 'org-llm)

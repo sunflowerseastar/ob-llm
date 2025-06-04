@@ -636,6 +636,7 @@ chosen one."
 ;;; Main minor mode setup
 ;;  ---------------------------------------------------------------------------
 
+;;;###autoload
 (defun org-babel-execute:llm (body raw-params)
   "Pass an llm code block to `llm'.
 

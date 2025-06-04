@@ -514,38 +514,34 @@ identifier, return nil."
 (defun org-llm-refresh-models ()
   "Update `org-llm-models' with `llm models' shell output."
   (interactive)
-  (message "org-llm-models are being refreshed via the `llm models` command...")
+  (message "org-llm-models are being refreshed via the `llm models' command...")
   (let* ((raw (shell-command-to-string "llm models"))
          (lines (split-string raw "\n" t)) ; drop empty strings
          (models (delq nil ; remove nils
                        (mapcar #'org-llm--output-to-model-identifier lines))))
     (setq org-llm-models models)
     (customize-save-variable 'org-llm-models models)
-    (message "org-llm-models have been refreshed. There are %d models available."
+    (message "org-llm-models have been refreshed. There are now %d models available."
              (length models))
     org-llm-models))
-
-(defun org-llm--initialize-models ()
-  "Initialize `org-llm-models' if it's empty."
-  (when (null org-llm-models)
-    (org-llm-refresh-models)))
-
-;; Initialize models when the package loads
-(add-hook 'after-init-hook 'org-llm--initialize-models)
 
 (defun org-llm-yank-a-model-name ()
   "Select a model and yank (paste) it into the current buffer."
   (interactive)
-  (let ((selection (completing-read "Yank a model name: " org-llm-models)))
-    (insert selection)
-    (message "Yanked: %s" selection)))
+  (if (null org-llm-models)
+      (message "org-llm doesn't know what models are available. Please M-x `org-llm-refresh-models'.")
+    (let ((selection (completing-read "Yank a model name: " org-llm-models)))
+      (insert selection)
+      (message "Yanked: %s" selection))))
 
 (defun org-llm-kill-a-model-name ()
   "Select a model and kill (copy) it."
   (interactive)
-  (let ((selection (completing-read "Kill a model name: " org-llm-models)))
-    (kill-new selection)
-    (message "Copied: %s" selection)))
+  (if (null org-llm-models)
+      (message "org-llm doesn't know what models are available. Please M-x `org-llm-refresh-models'.")
+    (let ((selection (completing-read "Kill a model name: " org-llm-models)))
+      (kill-new selection)
+      (message "Copied: %s" selection))))
 
 (defun org-llm-echo-default-model ()
   "Echo out the default model so you can see what's set."
@@ -558,10 +554,12 @@ identifier, return nil."
 With a prefix argument, see the current default model."
   (interactive)
   (if current-prefix-arg (shell-command "llm models default")
-    (let ((selection (completing-read "Set new default model: " org-llm-models)))
-      (let ((command (format "llm models default %s" selection)))
-        (shell-command command)
-        (message "Executed command: %s" command)))))
+    (if (null org-llm-models)
+        (message "org-llm doesn't know what models are available. Please M-x `org-llm-refresh-models'.")
+      (let ((selection (completing-read "Set new default model: " org-llm-models)))
+        (let ((command (format "llm models default %s" selection)))
+          (shell-command command)
+          (message "Executed command: %s" command))))))
 
 ;;  ---------------------------------------------------------------------------
 ;;; Database, conversation, logs

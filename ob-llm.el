@@ -1,9 +1,9 @@
-;;; org-llm.el --- Use `llm' as an Org Babel language -*- lexical-binding: t -*-
+;;; ob-llm.el --- Use `llm' as an Org Babel language -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2025 Grant Surlyn
 
 ;; Author: Grant Surlyn <grant@sunflowerseastar.com>
-;; URL: https://github.com/sunflowerseastar/org-llm
+;; URL: https://github.com/sunflowerseastar/ob-llm
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: llm org-mode tools convenience org babel
@@ -14,22 +14,22 @@
 
 ;; This file is not part of GNU Emacs.
 
-;; org-llm is free software; you can redistribute it and/or modify
+;; ob-llm is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
 ;; the Free Software Foundation, either version 3 of the License, or
 ;; (at your option) any later version.
 
-;; org-llm is distributed in the hope that it will be useful,
+;; ob-llm is distributed in the hope that it will be useful,
 ;; but WITHOUT ANY WARRANTY; without even the implied warranty of
 ;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with org-llm.  If not, see <https://www.gnu.org/licenses/>.
+;; along with ob-llm.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
-;; org-llm provides integration between Org-mode and Simon Willison's LLM
+;; ob-llm provides integration between Org-mode and Simon Willison's LLM
 ;; command-line tool (further referred to simply as `llm'), enabling interaction
 ;; with large language models directly from Org documents. If you don't have
 ;; `llm' installed or configured, please see https://llm.datasette.io to follow
@@ -80,23 +80,23 @@
 (require 'cl-lib)
 (require 'json)
 
-(defgroup org-llm nil
-  "Options for org-llm, a wrapper of the `llm' command line tool."
-  :tag "org-llm"
+(defgroup ob-llm nil
+  "Options for ob-llm, a wrapper of the `llm' command line tool."
+  :tag "ob-llm"
   :group 'org-babel)
 
 (defvar org-babel-load-languages)
-(defvar org-llm-active-processes nil
+(defvar ob-llm-active-processes nil
   "List of currently running LLM processes.")
 
-(defcustom org-llm-line-indicator "★"
+(defcustom ob-llm-line-indicator "★"
   "Text to display in the mode line when an LLM process is running.
 Set to nil to disable the indicator."
   :type '(choice (string :tag "Indicator text")
           (const :tag "No indicator" nil))
-  :group 'org-llm)
+  :group 'ob-llm)
 
-(defcustom org-llm-post-process-auto-convert-p t
+(defcustom ob-llm-post-process-auto-convert-p t
   "Whether to format (json) & convert (md) responses.
 
     chat (markdown) -> Org mode, schema (JSON) -> prettified JSON
@@ -111,9 +111,9 @@ coming back.
 When this is t, you can override the conversion on any code block
 with the header argument `:no-conversion'."
   :type 'boolean
-  :group 'org-llm)
+  :group 'ob-llm)
 
-(defcustom org-llm-pandoc-additional-org-mode-conversion-flags nil
+(defcustom ob-llm-pandoc-additional-org-mode-conversion-flags nil
   "Additional flags to pass to Pandoc when converting from md.
 
 This should be a list of strings, each string being a single flag
@@ -121,25 +121,25 @@ or flag with value. For example:
 
     (\"--lua-filter=/path/to/filter.lua\")"
   :type '(repeat string)
-  :group 'org-llm)
+  :group 'ob-llm)
 
-(defcustom org-llm-models nil
+(defcustom ob-llm-models nil
   "List of available LLM models.
 
-This list is populated with `org-llm-refresh-models' by
+This list is populated with `ob-llm-refresh-models' by
 converting and inserting the output from the shell command `llm
-models'. You should not have to adjust `org-llm-models' manually,
-but you will want to run `org-llm-refresh-models' whenever you
+models'. You should not have to adjust `ob-llm-models' manually,
+but you will want to run `ob-llm-refresh-models' whenever you
 update the `llm' plugins or otherwise change the models that you
 know will be available to `llm'."
   :type '(repeat string)
-  :group 'org-llm)
+  :group 'ob-llm)
 
 ;;  ---------------------------------------------------------------------------
 ;;; General helpers
 ;;  ---------------------------------------------------------------------------
 
-(defun org-llm--process-header-args (params)
+(defun ob-llm--process-header-args (params)
   "Process header arguments in PARAMS and return categorized results.
 Returns a plist with keys:
 
@@ -158,7 +158,7 @@ Returns a plist with keys:
                       :hlines :colname-names :rowname-names :result-type :result-params :wrap))
           (push param org-code-block-header-args))
 
-         ;; ...special header arguments used as "params" for org-llm application logic...
+         ;; ...special header arguments used as "params" for ob-llm application logic...
          ((memq key '(:database :no-conversion))
           (push param custom-params))
 
@@ -171,11 +171,11 @@ Returns a plist with keys:
           :custom-params custom-params
           :llm-flags llm-flags)))
 
-(defun org-llm--filter-params (raw-params)
+(defun ob-llm--filter-params (raw-params)
   "Filter RAW-PARAMS; keep relevant ones for `llm' command line.
 
 Converts Org Babel header arguments to command line flags for `llm'."
-  (let ((processed-params (org-llm--process-header-args raw-params)))
+  (let ((processed-params (ob-llm--process-header-args raw-params)))
     (mapconcat
      (lambda (param)
        (let ((key (symbol-name (car param)))
@@ -199,9 +199,9 @@ Converts Org Babel header arguments to command line flags for `llm'."
           (t ""))))
      (plist-get processed-params :llm-flags) "")))
 
-(defun org-llm--prepare-command (body raw-params)
+(defun ob-llm--prepare-command (body raw-params)
   "Build `llm' shell command based on BODY and RAW-PARAMS."
-  (let* ((flags (org-llm--filter-params raw-params))
+  (let* ((flags (ob-llm--filter-params raw-params))
          (logs-database-path (alist-get :database raw-params)))
     (format (concat (when logs-database-path
                       (format "LLM_USER_PATH=%s " logs-database-path))
@@ -209,7 +209,7 @@ Converts Org Babel header arguments to command line flags for `llm'."
             (shell-quote-argument body)
             flags)))
 
-(defun org-llm--create-output-buffer (buffer-name llm-shell-command)
+(defun ob-llm--create-output-buffer (buffer-name llm-shell-command)
   "Create and setup output buffer named BUFFER-NAME for command LLM-SHELL-COMMAND."
   (let ((buffer (get-buffer-create buffer-name)))
     (with-current-buffer buffer
@@ -220,25 +220,25 @@ Converts Org Babel header arguments to command line flags for `llm'."
       (insert "Output:\n\n"))
     buffer))
 
-(defun org-llm--setup-mode-line ()
+(defun ob-llm--setup-mode-line ()
   "Setup the mode line indicator for active LLM processes."
-  (when org-llm-line-indicator
-    (unless (member '(:eval (when org-llm-active-processes org-llm-line-indicator))
+  (when ob-llm-line-indicator
+    (unless (member '(:eval (when ob-llm-active-processes ob-llm-line-indicator))
                     global-mode-string)
       (setq global-mode-string
             (append global-mode-string
-                    (list '(:eval (when org-llm-active-processes org-llm-line-indicator)))))))
+                    (list '(:eval (when ob-llm-active-processes ob-llm-line-indicator)))))))
   (force-mode-line-update t))
 
 ;; ---------------------------------------------------------------------------
 ;; Post-processing
 ;; ---------------------------------------------------------------------------
 
-(defun org-llm--remove-trailing-backslashes (text)
+(defun ob-llm--remove-trailing-backslashes (text)
   "Remove trailing double backslashes from TEXT."
   (replace-regexp-in-string "\\\\\\\\$" "" text))
 
-(defun org-llm--prettify-json-response (final-output)
+(defun ob-llm--prettify-json-response (final-output)
   "Pretty-print FINAL-OUTPUT using jq if available."
   (if (executable-find "jq")
       (with-temp-buffer
@@ -249,7 +249,7 @@ Converts Org Babel header arguments to command line flags for `llm'."
           final-output))
     final-output))
 
-(defun org-llm--convert-markdown-response-to-org-mode (text)
+(defun ob-llm--convert-markdown-response-to-org-mode (text)
   "Convert markdown TEXT to Org with Pandoc, or return TEXT if conversion fails."
   (if (executable-find "pandoc")
       (with-temp-buffer
@@ -258,37 +258,37 @@ Converts Org Babel header arguments to command line flags for `llm'."
                                      "--to" "org"
                                      "--sandbox=true"
                                      "--wrap=none")
-                                   org-llm-pandoc-additional-org-mode-conversion-flags)))
+                                   ob-llm-pandoc-additional-org-mode-conversion-flags)))
           (if (zerop (apply #'call-process-region
                             (point-min) (point-max)
                             "pandoc" t t nil
                             pandoc-args))
-              (org-llm--remove-trailing-backslashes (buffer-string))
+              (ob-llm--remove-trailing-backslashes (buffer-string))
             text)))
     text))
 
-(defun org-llm--post-process-result (final-output schema-p no-conversion-p)
+(defun ob-llm--post-process-result (final-output schema-p no-conversion-p)
   "Post-process FINAL-OUTPUT.
 
 SCHEMA-P and NO-CONVERSION-P are used to determine how to
 process."
   (cond
    ;; 1 - do not perform any post-process conversion
-   ((or no-conversion-p (not org-llm-post-process-auto-convert-p)) final-output)
+   ((or no-conversion-p (not ob-llm-post-process-auto-convert-p)) final-output)
 
    ;; 2 - it's a schema, so prettify the JSON response
    (schema-p
-    (let ((final-output-after-pp-json (org-llm--prettify-json-response final-output)))
+    (let ((final-output-after-pp-json (ob-llm--prettify-json-response final-output)))
       (format "#+begin_src json\n%s\n#+end_src" final-output-after-pp-json)))
 
    ;; 3 - otherwise, convert the markdown response to Org mode syntax
-   (t (org-llm--convert-markdown-response-to-org-mode final-output))))
+   (t (ob-llm--convert-markdown-response-to-org-mode final-output))))
 
 ;;  ---------------------------------------------------------------------------
 ;;; Streams and processes
 ;;  ---------------------------------------------------------------------------
 
-(defun org-llm--insert-output (output src-buffer src-position)
+(defun ob-llm--insert-output (output src-buffer src-position)
   "Insert OUTPUT into SRC-BUFFER at SRC-POSITION."
   (condition-case err
       (with-current-buffer src-buffer
@@ -300,15 +300,15 @@ process."
               (org-babel-insert-result output '("raw"))))))
     (error (message "Error in LLM process sentinel: %S" err))))
 
-(defun org-llm--start-process (llm-shell-command output-buffer)
+(defun ob-llm--start-process (llm-shell-command output-buffer)
   "Start `llm' process with LLM-SHELL-COMMAND, out to OUTPUT-BUFFER."
 
   (let ((proc (start-process-shell-command "org-babel-llm" output-buffer llm-shell-command)))
     ;; Add to active processes list
-    (push proc org-llm-active-processes)
+    (push proc ob-llm-active-processes)
     proc))
 
-(defun org-llm--prepare-org-result-placeholder (src-buffer src-position params)
+(defun ob-llm--prepare-org-result-placeholder (src-buffer src-position params)
   "Create result placeholder in SRC-BUFFER at SRC-POSITION for streaming.
 
 PARAMS are the code block header arguments."
@@ -346,7 +346,7 @@ PARAMS are the code block header arguments."
                       (point-marker))
                   (point-marker))))))))))
 
-(defun org-llm--stream-output (output proc-buffer proc-mark result-marker)
+(defun ob-llm--stream-output (output proc-buffer proc-mark result-marker)
   "Stream OUTPUT into the process buffer & src buffer.
 
 PROC-BUFFER is process buffer with PROC-MARK as marker.
@@ -375,17 +375,17 @@ RESULT-MARKER define where to stream in src Org buffer."
             (insert clean-output)
             (set-marker result-marker (point))))))))
 
-(defun org-llm--create-process-filter ()
+(defun ob-llm--create-process-filter ()
   "Create process filter function for streaming output."
   (lambda (process output)
     (let ((res-marker (process-get process 'result-marker)))
-      (org-llm--stream-output
+      (ob-llm--stream-output
        output
        (process-buffer process)
        (process-mark process)
        res-marker))))
 
-(defun org-llm--create-process-sentinel ()
+(defun ob-llm--create-process-sentinel ()
   "Create process sentinel function for handling completion."
   (lambda (process event)
     (let* ((raw-params (process-get process 'raw-params))
@@ -433,39 +433,39 @@ RESULT-MARKER define where to stream in src Org buffer."
 
           ;; 2 - with error or non-zero exit, insert result no matter what
           (when (and (buffer-live-p src-buffer) exited-p)
-            (org-llm--insert-output final-output src-buffer src-position))
+            (ob-llm--insert-output final-output src-buffer src-position))
 
           ;; 3 - with regular finish, insert output into org-buffer (if not silent)
           (when (and (buffer-live-p src-buffer) (not silent-p) finished-p)
-            (let* ((processed-params (org-llm--process-header-args raw-params))
+            (let* ((processed-params (ob-llm--process-header-args raw-params))
                    (llm-flags (plist-get processed-params :llm-flags))
                    (schema-p (or (assq :schema llm-flags)
                                  (assq :schema-multi llm-flags)))
                    (custom-params (plist-get processed-params :custom-params))
                    (no-conversion-p (assq :no-conversion custom-params))
                    (processed-final-output
-                    (org-llm--post-process-result final-output schema-p no-conversion-p)))
-              (org-llm--insert-output processed-final-output src-buffer src-position)))))
+                    (ob-llm--post-process-result final-output schema-p no-conversion-p)))
+              (ob-llm--insert-output processed-final-output src-buffer src-position)))))
 
       ;; remove from active processes list
-      (setq org-llm-active-processes (delq process org-llm-active-processes))
+      (setq ob-llm-active-processes (delq process ob-llm-active-processes))
 
       ;; update mode line
-      (when (and org-llm-line-indicator (null org-llm-active-processes))
+      (when (and ob-llm-line-indicator (null ob-llm-active-processes))
         (force-mode-line-update t))
 
       ;; notify user
       (message "LLM process %s in %s seconds" status duration))))
 
-(defun org-llm-list-active-processes ()
+(defun ob-llm-list-active-processes ()
   "Display information about currently running LLM processes."
   (interactive)
-  (if org-llm-active-processes
+  (if ob-llm-active-processes
       (let ((buf (get-buffer-create "*LLM Processes*")))
         (with-current-buffer buf
           (erase-buffer)
-          (insert (format "%d active LLM processes:\n\n" (length org-llm-active-processes)))
-          (dolist (proc org-llm-active-processes)
+          (insert (format "%d active LLM processes:\n\n" (length ob-llm-active-processes)))
+          (dolist (proc ob-llm-active-processes)
             (let ((start-time (process-get proc 'start-time))
                   (duration (float-time (time-subtract (current-time)
                                                        (process-get proc 'start-time))))
@@ -477,23 +477,23 @@ RESULT-MARKER define where to stream in src Org buffer."
         (display-buffer buf))
     (message "No active LLM processes")))
 
-(defun org-llm-kill-process ()
+(defun ob-llm-kill-process ()
   "Kill the most recently started LLM process."
   (interactive)
-  (if org-llm-active-processes
-      (let ((proc (car org-llm-active-processes)))
+  (if ob-llm-active-processes
+      (let ((proc (car ob-llm-active-processes)))
         (when (yes-or-no-p (format "Kill process %s? " (process-name proc)))
           (delete-process proc)
           (message "Process %s killed" (process-name proc))))
     (message "No active LLM processes to kill")))
 
-(defun org-llm-kill-all-processes ()
+(defun ob-llm-kill-all-processes ()
   "Kill all running LLM processes."
   (interactive)
-  (when org-llm-active-processes
-    (dolist (proc org-llm-active-processes)
+  (when ob-llm-active-processes
+    (dolist (proc ob-llm-active-processes)
       (delete-process proc))
-    (setq org-llm-active-processes nil)
+    (setq ob-llm-active-processes nil)
     (message "All LLM processes killed")
     (message "No active LLM processes to kill")))
 
@@ -501,7 +501,7 @@ RESULT-MARKER define where to stream in src Org buffer."
 ;; Model handling
 ;; ---------------------------------------------------------------------------
 
-(defun org-llm--output-to-model-identifier (line)
+(defun ob-llm--output-to-model-identifier (line)
   "Return the model identifier found per LINE from `llm models'.
 
 The identifier is everything after the first `: ' up to the next
@@ -510,52 +510,52 @@ identifier, return nil."
   (when (string-match ": \\([^ ]+\\)" line)
     (match-string 1 line)))
 
-(defun org-llm-refresh-models ()
-  "Update `org-llm-models' with `llm models' shell output."
+(defun ob-llm-refresh-models ()
+  "Update `ob-llm-models' with `llm models' shell output."
   (interactive)
-  (message "org-llm-models are being refreshed via the `llm models' command...")
+  (message "ob-llm-models are being refreshed via the `llm models' command...")
   (let* ((raw (shell-command-to-string "llm models"))
          (lines (split-string raw "\n" t)) ; drop empty strings
          (models (delq nil ; remove nils
-                       (mapcar #'org-llm--output-to-model-identifier lines))))
-    (setq org-llm-models models)
-    (customize-save-variable 'org-llm-models models)
-    (message "org-llm-models have been refreshed. There are now %d models available."
+                       (mapcar #'ob-llm--output-to-model-identifier lines))))
+    (setq ob-llm-models models)
+    (customize-save-variable 'ob-llm-models models)
+    (message "ob-llm-models have been refreshed. There are now %d models available."
              (length models))
-    org-llm-models))
+    ob-llm-models))
 
-(defun org-llm-yank-a-model-name ()
+(defun ob-llm-yank-a-model-name ()
   "Select a model and yank (paste) it into the current buffer."
   (interactive)
-  (if (null org-llm-models)
-      (message "org-llm doesn't know what models are available. Please M-x `org-llm-refresh-models'.")
-    (let ((selection (completing-read "Yank a model name: " org-llm-models)))
+  (if (null ob-llm-models)
+      (message "ob-llm doesn't know what models are available. Please M-x `ob-llm-refresh-models'.")
+    (let ((selection (completing-read "Yank a model name: " ob-llm-models)))
       (insert selection)
       (message "Yanked: %s" selection))))
 
-(defun org-llm-kill-a-model-name ()
+(defun ob-llm-kill-a-model-name ()
   "Select a model and kill (copy) it."
   (interactive)
-  (if (null org-llm-models)
-      (message "org-llm doesn't know what models are available. Please M-x `org-llm-refresh-models'.")
-    (let ((selection (completing-read "Kill a model name: " org-llm-models)))
+  (if (null ob-llm-models)
+      (message "ob-llm doesn't know what models are available. Please M-x `ob-llm-refresh-models'.")
+    (let ((selection (completing-read "Kill a model name: " ob-llm-models)))
       (kill-new selection)
       (message "Copied: %s" selection))))
 
-(defun org-llm-echo-default-model ()
+(defun ob-llm-echo-default-model ()
   "Echo out the default model so you can see what's set."
   (interactive)
   (shell-command "llm models default"))
 
-(defun org-llm-change-default-model ()
+(defun ob-llm-change-default-model ()
   "Set a new default model.
 
 With a prefix argument, see the current default model."
   (interactive)
   (if current-prefix-arg (shell-command "llm models default")
-    (if (null org-llm-models)
-        (message "org-llm doesn't know what models are available. Please M-x `org-llm-refresh-models'.")
-      (let ((selection (completing-read "Set new default model: " org-llm-models)))
+    (if (null ob-llm-models)
+        (message "ob-llm doesn't know what models are available. Please M-x `ob-llm-refresh-models'.")
+      (let ((selection (completing-read "Set new default model: " ob-llm-models)))
         (let ((command (format "llm models default %s" selection)))
           (shell-command command)
           (message "Executed command: %s" command))))))
@@ -564,7 +564,7 @@ With a prefix argument, see the current default model."
 ;;; Database, conversation, logs
 ;;  ---------------------------------------------------------------------------
 
-(defun org-llm-browse-conversations ()
+(defun ob-llm-browse-conversations ()
   "Browse LLM conversations to yank an ID."
   (interactive)
   (let* ((output (shell-command-to-string "llm logs -t --json"))
@@ -584,7 +584,7 @@ With a prefix argument, see the current default model."
           (kill-new conversation-id)
           (message "Yanked conversation ID: %s" conversation-id))))))
 
-(defun org-llm-query-logs-candidates (json-data)
+(defun ob-llm-query-logs-candidates (json-data)
   "Build an association list of candidates from JSON-DATA.
 
 Each candidate is a cons cell where the car is a formatted string
@@ -603,7 +603,7 @@ id in columns, and the cdr is the corresponding id."
                          (or id ""))
                  id)))
 
-(defun org-llm-query-logs ()
+(defun ob-llm-query-logs ()
   "Search the llm logs with a query string.
 
 Prompt for a search string (in minibuffer via `read-string'),
@@ -621,7 +621,7 @@ chosen one."
     (if (not data)
         (message "No data returned from command: %s" llm-logs-shell-command)
       (let* ((candidates
-              (org-llm-query-logs-candidates data)) ; alist of (display . id)
+              (ob-llm-query-logs-candidates data)) ; alist of (display . id)
              ;; completing-read expects a collection of strings;
              (selection (completing-read "Select log: " candidates nil t)))
         (when selection
@@ -639,14 +639,14 @@ chosen one."
 
 The BODY is the prompt that will be passed to `llm' as a shell
 command. RAW-PARAMS (the code block header arguments) will be
-processed such that Babel gets the ones it expects, org-llm gets
+processed such that Babel gets the ones it expects, ob-llm gets
 the ones it wants (ex. `:no-conversion'), and the rest are passed
 to the `llm' shell command as flags."
 
   ;; Set up the environment
-  (let* ((llm-shell-command (org-llm--prepare-command body raw-params))
-         (buffer-name (format "*org-llm-output-%s*" (make-temp-name "")))
-         (buffer (org-llm--create-output-buffer buffer-name llm-shell-command))
+  (let* ((llm-shell-command (ob-llm--prepare-command body raw-params))
+         (buffer-name (format "*ob-llm-output-%s*" (make-temp-name "")))
+         (buffer (ob-llm--create-output-buffer buffer-name llm-shell-command))
          (src-buffer (current-buffer))
          (src-position (point))
          (start-time (current-time))
@@ -663,15 +663,15 @@ to the `llm' shell command as flags."
           (set-window-buffer new-window buffer))))
 
     ;; record the place in the src buffer for streaming results
-    (setq result-marker (org-llm--prepare-org-result-placeholder src-buffer src-position raw-params))
+    (setq result-marker (ob-llm--prepare-org-result-placeholder src-buffer src-position raw-params))
     (when result-marker
       (setq stream-start-marker (copy-marker result-marker nil)))
 
     ;; start the process
-    (setq proc (org-llm--start-process llm-shell-command buffer))
+    (setq proc (ob-llm--start-process llm-shell-command buffer))
 
     ;; update mode line
-    (org-llm--setup-mode-line)
+    (ob-llm--setup-mode-line)
 
     ;; store context as process properties
     (process-put proc 'raw-params raw-params)
@@ -689,16 +689,16 @@ to the `llm' shell command as flags."
                      (progn (forward-line) (line-end-position)))))
 
     ;; set the process filter to handle the received stream
-    (set-process-filter proc (org-llm--create-process-filter))
+    (set-process-filter proc (ob-llm--create-process-filter))
 
     ;; set the process sentinel for completion/exit handling
-    (set-process-sentinel proc (org-llm--create-process-sentinel))
+    (set-process-sentinel proc (ob-llm--create-process-sentinel))
 
     ;; return a placeholder -- filter & sentinel handle everything
     nil))
 
 ;;;###autoload
-(define-minor-mode org-llm-mode
+(define-minor-mode ob-llm-mode
   "Minor mode to handle llm Babel code blocks in Org-mode.
 
 Execution will send the code block content to Simon Willison's
@@ -706,8 +706,8 @@ Execution will send the code block content to Simon Willison's
 flags."
   :lighter " LLM"
   :keymap (let ((map (make-sparse-keymap))) map)
-  :group 'org-llm
-  (if org-llm-mode
+  :group 'ob-llm
+  (if ob-llm-mode
       (progn
         (unless (assq 'llm org-babel-load-languages)
           (add-to-list 'org-babel-load-languages '(llm . t)))
@@ -717,6 +717,6 @@ flags."
     (setq org-babel-load-languages (assq-delete-all 'llm org-babel-load-languages))
     (message "Org LLM mode disabled")))
 
-(provide 'org-llm)
+(provide 'ob-llm)
 
-;;; org-llm.el ends here
+;;; ob-llm.el ends here

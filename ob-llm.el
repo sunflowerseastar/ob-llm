@@ -145,8 +145,8 @@ Returns a plist with keys:
 
 - :org-code-block-header-args - standard org babel header arguments
 - :custom-params - custom parameters for special handling
-- :llm-flags - all remaining header arguments go to `llm' command"
-  (let (llm-flags org-code-block-header-args custom-params)
+- :llm-params - all remaining header arguments go to `llm' command"
+  (let (llm-params org-code-block-header-args custom-params)
     ;; Process each parameter
     (dolist (param params)
       (let ((key (car param)))
@@ -164,50 +164,60 @@ Returns a plist with keys:
 
          ;; ...and then all other header arguments are going to be passed to the
          ;; `llm' command as flags.
-         (t (push param llm-flags)))))
+         (t (push param llm-params)))))
 
     ;; Return categorized parameters
     (list :org-code-block-header-args org-code-block-header-args
           :custom-params custom-params
-          :llm-flags llm-flags)))
+          :llm-params llm-params)))
 
-(defun ob-llm--filter-params (raw-params)
-  "Filter RAW-PARAMS; keep relevant ones for `llm' command line.
+(defun ob-llm--llm-params->llm-flags (llm-params)
+  "Convert LLM-PARAMS to `llm' flags.
 
-Converts Org Babel header arguments to command line flags for `llm'."
-  (let ((processed-params (ob-llm--process-header-args raw-params)))
-    (mapconcat
-     (lambda (param)
-       (let ((key (symbol-name (car param)))
-             (value (cdr param)))
-         ;; Check if the key is valid for 'llm' and if value is non-nil.
-         (cond
-          ;; Handle parameters that should be translated directly to flags
-          ((null value)  ;; Boolean flags
-           (let ((flag (substring key 1))) ;; Remove leading ':' from key
-             (if (= (length flag) 1)
-                 (format " -%s" flag)
-               (format " --%s" flag))))
-          ((and (string-prefix-p ":" key) value)
-           (let ((flag (substring key 1))) ;; Remove leading ':' from key
-             (if (= (length flag) 1)
-                 (format " -%s %s" flag (shell-quote-argument (format "%s" value)))
-               (format " --%s %s" flag (shell-quote-argument (format "%s" value))))))
-          ;; Treat single-dash flags separately
-          ((member key '("-s"))
-           (format "%s" (shell-quote-argument (format "%s" value))))
-          (t ""))))
-     (plist-get processed-params :llm-flags) "")))
+The flags come in two variations:
 
-(defun ob-llm--prepare-command (body raw-params)
+- as a (true) boolean, ex. --no-log
+- as a flag with a value, ex. --model 4o
+
+Each of these in turn has two variations, where the flag name is
+either a single letter (so it gets a single leading hyphen for
+the flag, ex. `-m') or it's more than one letter (so it gets two
+leading hyphens for the flag, ex. `--model').
+
+Note the trailing space for each converted `llm-flag'. This is
+just so that any number of these can be simply concatenated. The
+final trailing whitespace doesn't hurt anything, so it is not
+cleaned up."
+  (mapconcat
+   (lambda (llm-param)
+     (let* ((key (symbol-name (car llm-param)))
+            (flag-name (substring key 1)) ; remove leading colon
+            (flag-value (cdr llm-param))
+            (single-letter-flag-name-p (= (length flag-name) 1)))
+       (cond
+        ;; boolean flag, ex. `:no-log' -> `--no-log '
+        ((null flag-value)
+         (if single-letter-flag-name-p
+             (format "-%s " flag-name)  ; note the single hyphen
+           (format "--%s " flag-name))) ; note the double hyphen
+        ;; flag with a value, ex. `:m 4o' -> `-m 4o '
+        (t
+         (if single-letter-flag-name-p
+             (format "-%s %s " flag-name (shell-quote-argument (format "%s" flag-value)))
+           (format "--%s %s " flag-name (shell-quote-argument (format "%s" flag-value))))))))
+   llm-params ""))
+
+(defun ob-llm--construct-llm-shell-command (body raw-params)
   "Build `llm' shell command based on BODY and RAW-PARAMS."
-  (let* ((flags (ob-llm--filter-params raw-params))
+  (let* ((processed-params (ob-llm--process-header-args raw-params))
+         (llm-params (plist-get processed-params :llm-params))
+         (llm-flags (ob-llm--llm-params->llm-flags llm-params))
          (logs-database-path (alist-get :database raw-params)))
     (format (concat (when logs-database-path
                       (format "LLM_USER_PATH=%s " logs-database-path))
                     "llm %s %s")
             (shell-quote-argument body)
-            flags)))
+            llm-flags)))
 
 (defun ob-llm--create-output-buffer (buffer-name llm-shell-command)
   "Create and setup output buffer named BUFFER-NAME for command LLM-SHELL-COMMAND."
@@ -438,9 +448,9 @@ RESULT-MARKER define where to stream in src Org buffer."
           ;; 3 - with regular finish, insert output into org-buffer (if not silent)
           (when (and (buffer-live-p src-buffer) (not silent-p) finished-p)
             (let* ((processed-params (ob-llm--process-header-args raw-params))
-                   (llm-flags (plist-get processed-params :llm-flags))
-                   (schema-p (or (assq :schema llm-flags)
-                                 (assq :schema-multi llm-flags)))
+                   (llm-params (plist-get processed-params :llm-params))
+                   (schema-p (or (assq :schema llm-params)
+                                 (assq :schema-multi llm-params)))
                    (custom-params (plist-get processed-params :custom-params))
                    (no-conversion-p (assq :no-conversion custom-params))
                    (processed-final-output
@@ -644,7 +654,7 @@ the ones it wants (ex. `:no-conversion'), and the rest are passed
 to the `llm' shell command as flags."
 
   ;; Set up the environment
-  (let* ((llm-shell-command (ob-llm--prepare-command body raw-params))
+  (let* ((llm-shell-command (ob-llm--construct-llm-shell-command body raw-params))
          (buffer-name (format "*ob-llm-output-%s*" (make-temp-name "")))
          (buffer (ob-llm--create-output-buffer buffer-name llm-shell-command))
          (src-buffer (current-buffer))

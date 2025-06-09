@@ -1,5 +1,7 @@
 * ob-llm
 
+[[https://melpa.org/#/gptel][file:https://melpa.org/packages/ob-llm-badge.svg]]
+
 Talk to LLMs from within Org mode by using babel code blocks.
 
 #+begin_quote

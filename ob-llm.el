@@ -139,6 +139,19 @@ know will be available to `llm'."
 ;;; General helpers
 ;;  ---------------------------------------------------------------------------
 
+(defun ob-llm--shell-quote-a-string-but-keep-spaces (string-with-spaces)
+  "Shell quote STRING-WITH-SPACES but don't escape spaces.
+
+This exists so a user can pass, ex. `:at myfile.org text/plain'
+and it can be converted to an llm-flag of `--at myfile.org
+text/plain' instead of `:at myfile.org\ text/plain'. The latter
+one has an escaped space, which means that `llm' will look for a
+file called `myfile.org\ text/plain'. The former will pass 2
+arguments to `--at', the first being the filename and the second
+being the content type."
+  (mapconcat (lambda (x) (shell-quote-argument x))
+             (split-string string-with-spaces " ") " "))
+
 (defun ob-llm--process-header-args (params)
   "Process header arguments in PARAMS and return categorized results.
 Returns a plist with keys:
@@ -200,6 +213,8 @@ cleaned up."
          (if single-letter-flag-name-p
              (format "-%s " flag-name)  ; note the single hyphen
            (format "--%s " flag-name))) ; note the double hyphen
+        ((or (string-match flag-name "attachment-type") (string-match flag-name "at"))
+         (format "--%s %s " flag-name (ob-llm--shell-quote-a-string-but-keep-spaces flag-value)))
         ;; flag with a value, ex. `:m 4o' -> `-m 4o '
         (t
          (if single-letter-flag-name-p

@@ -3,6 +3,12 @@
 (require 'ob-llm)
 (require 'ert)
 
+(ert-deftest ob-llm--shell-quote-a-string-but-keep-spaces ()
+  (should (equal (ob-llm--shell-quote-a-string-but-keep-spaces "myfile.org text/plain")
+                 "myfile.org text/plain"))
+  (should (equal (ob-llm--shell-quote-a-string-but-keep-spaces  "$cr@zy word|2")
+                 "\\$cr\\@zy word\\|2")))
+
 (ert-deftest ob-llm-test-process-header-args-empty ()
   "Test processing empty parameter list."
   (let ((result (ob-llm--process-header-args '())))
@@ -39,7 +45,7 @@
 
 (ert-deftest ob-llm-test-process-header-args-mixed ()
   "Test processing mixed parameter types."
-  (let* ((params '((:results . "raw") (:model . "claude") (:database . "/tmp/db") 
+  (let* ((params '((:results . "raw") (:model . "claude") (:database . "/tmp/db")
                    (:exports . "both") (:temperature . "0.5") (:no-conversion)))
          (result (ob-llm--process-header-args params))
          (org-code-block-header-args (plist-get result :org-code-block-header-args))

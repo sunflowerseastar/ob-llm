@@ -172,7 +172,7 @@ Returns a plist with keys:
           (push param org-code-block-header-args))
 
          ;; ...special header arguments used as "params" for ob-llm application logic...
-         ((memq key '(:database :no-conversion))
+         ((memq key '(:user-path :no-conversion))
           (push param custom-params))
 
          ;; ...and then all other header arguments are going to be passed to the
@@ -206,20 +206,22 @@ cleaned up."
      (let* ((key (symbol-name (car llm-param)))
             (flag-name (substring key 1)) ; remove leading colon
             (flag-value (cdr llm-param))
-            (single-letter-flag-name-p (= (length flag-name) 1)))
+            (flag-hyphens (if (= (length flag-name) 1) "-" "--")))
        (cond
         ;; boolean flag, ex. `:no-log' -> `--no-log '
         ((null flag-value)
-         (if single-letter-flag-name-p
-             (format "-%s " flag-name)  ; note the single hyphen
-           (format "--%s " flag-name))) ; note the double hyphen
-        ((or (string-match flag-name "attachment-type") (string-match flag-name "at"))
-         (format "--%s %s " flag-name (ob-llm--shell-quote-a-string-but-keep-spaces flag-value)))
-        ;; flag with a value, ex. `:m 4o' -> `-m 4o '
-        (t
-         (if single-letter-flag-name-p
-             (format "-%s %s " flag-name (shell-quote-argument (format "%s" flag-value)))
-           (format "--%s %s " flag-name (shell-quote-argument (format "%s" flag-value))))))))
+         (concat flag-hyphens (format "%s " flag-name)))
+        ;; --attachment-type (or --at) takes two arguments
+        ((or (equal flag-name "attachment-type") (equal flag-name "at"))
+         (concat flag-hyphens (format "%s %s " flag-name
+                                      (ob-llm--shell-quote-a-string-but-keep-spaces flag-value))))
+        ;; the database path needs to be expanded
+        ((or (equal flag-name "database") (equal flag-name "d"))
+         (concat flag-hyphens (format "%s %s " flag-name
+                                      (expand-file-name flag-value))))
+        ;; flag with a single value, ex. `:m 4o' -> `-m 4o '
+        (t (concat flag-hyphens (format "%s %s " flag-name
+                                        (shell-quote-argument (format "%s" flag-value))))))))
    llm-params ""))
 
 (defun ob-llm--construct-llm-shell-command (body raw-params)
@@ -227,9 +229,9 @@ cleaned up."
   (let* ((processed-params (ob-llm--process-header-args raw-params))
          (llm-params (plist-get processed-params :llm-params))
          (llm-flags (ob-llm--llm-params->llm-flags llm-params))
-         (logs-database-path (alist-get :database raw-params)))
-    (format (concat (when logs-database-path
-                      (format "LLM_USER_PATH=%s " logs-database-path))
+         (custom-llm-user-path (alist-get :user-path raw-params)))
+    (format (concat (when custom-llm-user-path
+                      (format "LLM_USER_PATH=%s " custom-llm-user-path))
                     "llm %s %s")
             (shell-quote-argument body)
             llm-flags)))

@@ -123,6 +123,34 @@ or flag with value. For example:
   :type '(repeat string)
   :group 'ob-llm)
 
+(defcustom ob-llm-post-process-auto-shift-p t
+  "Whether to adjust converted Org's heading levels.
+
+Here is an example with shifting:
+
+* heading 1
+** heading 2
+#+begin_src llm
+... prompt ...
+#+end_src
+
+#+RESULTS:
+*** response starts at heading 3
+
+
+And without:
+
+* heading 1
+** heading 2
+#+begin_src llm
+... prompt ...
+#+end_src
+
+#+RESULTS:
+* response starts back at heading 1"
+  :type 'boolean
+  :group 'ob-llm)
+
 (defcustom ob-llm-models nil
   "List of available LLM models.
 
@@ -172,7 +200,7 @@ Returns a plist with keys:
           (push param org-code-block-header-args))
 
          ;; ...special header arguments used as "params" for ob-llm application logic...
-         ((memq key '(:user-path :no-conversion))
+         ((memq key '(:user-path :no-conversion :no-shift))
           (push param custom-params))
 
          ;; ...and then all other header arguments are going to be passed to the
@@ -276,40 +304,82 @@ cleaned up."
           final-output))
     final-output))
 
-(defun ob-llm--convert-markdown-response-to-org-mode (text)
-  "Convert markdown TEXT to Org with Pandoc, or return TEXT if conversion fails."
-  (if (executable-find "pandoc")
-      (with-temp-buffer
-        (insert text)
-        (let ((pandoc-args (append '("--from" "markdown+hard_line_breaks"
-                                     "--to" "org"
-                                     "--sandbox=true"
-                                     "--wrap=none")
-                                   ob-llm-pandoc-additional-org-mode-conversion-flags)))
-          (if (zerop (apply #'call-process-region
-                            (point-min) (point-max)
-                            "pandoc" t t nil
-                            pandoc-args))
-              (ob-llm--remove-trailing-backslashes (buffer-string))
-            text)))
-    text))
+(defun ob-llm--convert-markdown-response-to-org-mode (text &optional heading-offset)
+  "Convert markdown TEXT to Org and optionally shift headings.
 
-(defun ob-llm--post-process-result (final-output schema-p no-conversion-p)
+Step 1 is to run the markdown through `pandoc'.
+
+Step 2 is to take the HEADING-OFFSET, and shift all the Org
+syntax headings by that many levels by adding asterisks with
+`sed'.
+
+Let the user know if there are errors, and send back the text at
+that point."
+  (unless (executable-find "pandoc")
+    (message "ob-llm: pandoc not found – leaving markdown unconverted")
+    (cl-return-from ob-llm--convert-markdown-response-to-org-mode text))
+  (with-temp-buffer
+    (insert text)
+    (let* ((pandoc-args
+            (append '("--from" "markdown+hard_line_breaks" "--to" "org"
+                      "--sandbox=true" "--wrap=none")
+                    ob-llm-pandoc-additional-org-mode-conversion-flags))
+           (pandoc-status
+            ;; step 1 - convert markdown to org with pandoc
+            (apply #'call-process-region
+                   (point-min) (point-max)
+                   "pandoc" t t nil pandoc-args)))
+      (if (/= pandoc-status 0)
+          (progn
+            (message "ob-llm: pandoc exited non-zero when trying to convert markdown to Org syntax: %s" pandoc-status)
+            text)
+        ;; step 2 - optionally adjust the org heading levels
+        (let ((org-text (ob-llm--remove-trailing-backslashes (buffer-string))))
+          (cond
+           ;; 2a - there's no heading adjustment to make
+           ((or (not heading-offset) (<= heading-offset 0)) org-text)
+           ;; 2b - sed is not available
+           ((not (executable-find "sed"))
+            (message "ob-llm: sed not found – Org headings unshifted")
+            org-text)
+           ;; 2c - go for it, adjust the heading levels
+           (t (with-temp-buffer
+                (insert org-text)
+                (let* ((extra-asterisks (make-string heading-offset ?*))
+                       (script (format "s/^\\*\\{1,\\}/&%s/" extra-asterisks))
+                       (sed-status (call-process-region
+                                    (point-min) (point-max)
+                                    "sed" t t nil "-e" script)))
+                  (if (zerop sed-status)
+                      (buffer-string)
+                    (message "ob-llm: sed exited non-zero when trying to shift Org headings: %s"
+                             sed-status)
+                    (buffer-string)))))))))))
+
+(defun ob-llm--post-process-result (final-output schema-p no-conversion-p no-shift-p &optional heading-offset)
   "Post-process FINAL-OUTPUT.
 
-SCHEMA-P and NO-CONVERSION-P are used to determine how to
-process."
+If NO-CONVERSION-P (or if `ob-llm-post-process-auto-convert-p' is
+nil), skip any conversion. If SCHEMA-P, then prettify the JSON
+response.
+
+The HEADING-OFFSET says what level of nested headings the source
+Org buffer is at. This is thread through to the conversion
+function, which will use `sed` to adjust the headings all to a
+deeper level if necessary so that the response will neatly nest
+into the Org buffer. The HEADING-OFFSET is set to 0 (as in, no
+shifting) if `ob-llm-post-process-auto-shift-p' is nil or if
+NO-SHIFT-P was passed."
   (cond
-   ;; 1 - do not perform any post-process conversion
-   ((or no-conversion-p (not ob-llm-post-process-auto-convert-p)) final-output)
-
-   ;; 2 - it's a schema, so prettify the JSON response
+   ((or no-conversion-p (not ob-llm-post-process-auto-convert-p))
+    final-output)
    (schema-p
-    (let ((final-output-after-pp-json (ob-llm--prettify-json-response final-output)))
-      (format "#+begin_src json\n%s\n#+end_src" final-output-after-pp-json)))
-
-   ;; 3 - otherwise, convert the markdown response to Org mode syntax
-   (t (ob-llm--convert-markdown-response-to-org-mode final-output))))
+    (let ((pretty (ob-llm--prettify-json-response final-output)))
+      (format "#+begin_src json\n%s\n#+end_src" pretty)))
+   (t
+    (let* ((remove-heading-offset-p (or no-shift-p (not ob-llm-post-process-auto-shift-p)))
+           (adjusted-heading-offset (if remove-heading-offset-p 0 heading-offset)))
+      (ob-llm--convert-markdown-response-to-org-mode final-output adjusted-heading-offset)))))
 
 ;;  ---------------------------------------------------------------------------
 ;;; Streams and processes
@@ -470,8 +540,13 @@ RESULT-MARKER define where to stream in src Org buffer."
                                  (assq :schema-multi llm-params)))
                    (custom-params (plist-get processed-params :custom-params))
                    (no-conversion-p (assq :no-conversion custom-params))
+                   (no-shift-p (assq :no-shift custom-params))
+                   (heading-offset
+                    (org-with-point-at src-position
+                      (or (org-current-level) 0)))
                    (processed-final-output
-                    (ob-llm--post-process-result final-output schema-p no-conversion-p)))
+                    (ob-llm--post-process-result
+                     final-output schema-p no-conversion-p no-shift-p heading-offset)))
               (ob-llm--insert-output processed-final-output src-buffer src-position)))))
 
       ;; remove from active processes list
@@ -618,13 +693,13 @@ Each candidate is a cons cell where the car is a formatted string
 that displays conversation_name, prompt, conversation_model, and
 id in columns, and the cdr is the corresponding id."
   (cl-loop for entry across json-data
-           for conv = (alist-get 'conversation_name entry)
+           for name = (alist-get 'conversation_name entry)
            for prompt = (alist-get 'prompt entry)
            for model = (alist-get 'conversation_model entry)
            for id = (alist-get 'conversation_id entry)
            collect
            (cons (format "%-40s %-60s %-20s %s"
-                         (or conv "")
+                         (or name "")
                          (or prompt "")
                          (or model "")
                          (or id ""))

@@ -321,7 +321,7 @@ that point."
   (with-temp-buffer
     (insert text)
     (let* ((pandoc-args
-            (append '("--from" "markdown+hard_line_breaks-simple_tables" "--to" "org"
+            (append '("--from" "gfm+hard_line_breaks" "--to" "org"
                       "--sandbox=true" "--wrap=none")
                     ob-llm-pandoc-additional-org-mode-conversion-flags))
            (pandoc-status

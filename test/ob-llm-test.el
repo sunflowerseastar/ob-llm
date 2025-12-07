@@ -74,6 +74,22 @@
     (should (equal (ob-llm--construct-llm-shell-command body raw-params)
                    "LLM_USER_PATH=/tmp/db llm hello --no-log --temperature 0.7 --database /tmp/db/test-db-2.db --model 4o "))))
 
+(ert-deftest ob-llm-test-convert-markdown-preserves-nested-lists ()
+  "Test that nested bullet lists are preserved during markdown->org conversion."
+  (skip-unless (executable-find "pandoc"))
+  (let ((input "
+- Parent item:
+  - Nested item 1
+  - Nested item 2
+- Another parent"))
+    (let ((result (ob-llm--convert-markdown-response-to-org-mode input)))
+      ;; Nested items should have leading whitespace (indentation preserved)
+      (should (string-match-p "^  - Nested item 1" result))
+      (should (string-match-p "^  - Nested item 2" result))
+      ;; Parent items should not have leading whitespace
+      (should (string-match-p "^- Parent item" result))
+      (should (string-match-p "^- Another parent" result)))))
+
 (provide 'ob-llm-test)
 
 ;;; ob-llm-test.el ends here
